@@ -297,6 +297,7 @@ async def generate_chunks(text: str, voice: str, engine: str, cache_id: str):
             # Mark as completed with final file size
             final_size = os.path.getsize(final_path)
             generation_status[cache_id]["status"] = "completed"
+            # Save metadata with file_size immediately to avoid race condition
             save_cache_meta(cache_id, {
                 "status": "completed",
                 "progress": total,
@@ -505,6 +506,9 @@ async def stream_audio_live(cache_id: str):
     async def generate() -> AsyncGenerator[bytes, None]:
         READ = 8192  # small chunks -> low latency
         sent = 0
+        last_file_size = 0
+        stable_count = 0  # Count consecutive stable file size checks
+        min_stable_checks = 3  # Require 3 consecutive stable checks before ending
 
         while True:
             cur_size = os.path.getsize(final_path)
@@ -518,6 +522,9 @@ async def stream_audio_live(cache_id: str):
                             break
                         sent += len(data)
                         yield data
+                # Reset stable count when we send new data
+                stable_count = 0
+                last_file_size = cur_size
 
             # Check if generation finished
             # Priority: in-memory status > metadata file
@@ -530,12 +537,27 @@ async def stream_audio_live(cache_id: str):
                 if status == "failed":
                     break
                 if status == "completed":
-                    # Verify file size matches
+                    # Get expected file size from metadata
                     meta = load_cache_meta(cache_id)
                     expected_size = meta.get("file_size") if meta else None
-                    if expected_size is None or sent >= expected_size:
-                        break
-                    # Wait for remaining data
+                    
+                    # If we have expected size, verify we've sent all data
+                    if expected_size is not None:
+                        if sent >= expected_size:
+                            break
+                        # Wait for remaining data to be written
+                    else:
+                        # Metadata not yet saved - check if file size is stable
+                        # This handles the race condition where status is completed
+                        # but metadata hasn't been saved yet
+                        if cur_size == last_file_size:
+                            stable_count += 1
+                            if stable_count >= min_stable_checks:
+                                # File size stable for multiple checks, likely done
+                                break
+                        else:
+                            stable_count = 0
+                            last_file_size = cur_size
             else:
                 # Not in memory - check metadata
                 meta = load_cache_meta(cache_id)
@@ -546,6 +568,15 @@ async def stream_audio_live(cache_id: str):
                         expected_size = meta.get("file_size")
                         if expected_size and sent >= expected_size:
                             break
+                        # If no expected_size, check file stability
+                        if expected_size is None:
+                            if cur_size == last_file_size:
+                                stable_count += 1
+                                if stable_count >= min_stable_checks:
+                                    break
+                            else:
+                                stable_count = 0
+                                last_file_size = cur_size
                     elif meta_status == "failed":
                         break
                     # If processing, continue waiting
