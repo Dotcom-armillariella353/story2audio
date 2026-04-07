@@ -212,6 +212,15 @@
     player.addEventListener('play', () => {
         player.playbackRate = getRate();
     });
+    // Re-apply on ratechange to ensure it sticks
+    player.addEventListener('ratechange', () => {
+        // Only log, don't force - let user control via selector
+        console.log('[TTS] Playback rate changed to:', player.playbackRate);
+    });
+    // Re-apply on canplay event (after enough data is buffered)
+    player.addEventListener('canplay', () => {
+        player.playbackRate = getRate();
+    });
 
     // Check MediaSource support for audio/mpeg
     const MSE_SUPPORTED = (
@@ -233,10 +242,19 @@
         resetUI();
         btn.disabled = true;
 
-        const params = new URLSearchParams({ text, engine, voice });
+        // gTTS doesn't need voice parameter
+        const requestBody = { text, engine };
+        if (engine === 'edge') {
+            requestBody.voice = voice;
+        }
+
         let data;
         try {
-            const res = await fetch('/tts/start?' + params.toString());
+            const res = await fetch('/tts/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
+            });
             data = await res.json();
         } catch (e) {
             statusLbl.textContent = 'Lỗi kết nối!';
@@ -339,6 +357,7 @@
         let firstChunk = true;
         let totalBytes = 0;
 
+        // Read stream data
         while (true) {
             let result;
             try { result = await streamReader.read(); }
@@ -366,12 +385,59 @@
                 'Dữ liệu đã nhận: ' + (totalBytes / 1024).toFixed(1) + ' KB';
         }
 
-        // Finalize
+        // Wait for sourceBuffer to finish processing
         if (sourceBuffer && sourceBuffer.updating) await waitUpdateEnd(sourceBuffer);
+        
+        // Wait for generation to complete (with timeout)
+        let finalStatus = null;
+        for (let i = 0; i < 120; i++) {  // 60 seconds max
+            try {
+                const st = await fetch('/tts/status/' + cacheId);
+                finalStatus = await st.json();
+                if (finalStatus.status === 'completed' || finalStatus.status === 'failed') break;
+            } catch(e) {}
+            await sleep(500);
+        }
+        
+        // If generation completed, fetch any remaining data
+        if (finalStatus && finalStatus.status === 'completed') {
+            const expectedSize = finalStatus.file_size || 0;
+            if (expectedSize > totalBytes && mediaSource && mediaSource.readyState === 'open') {
+                // Fetch remaining bytes
+                try {
+                    const fileRes = await fetch('/tts/file/' + cacheId, {
+                        headers: { 'Range': `bytes=${totalBytes}-` }
+                    });
+                    if (fileRes.ok || fileRes.status === 206) {
+                        const remainingData = await fileRes.arrayBuffer();
+                        if (remainingData.byteLength > 0) {
+                            if (sourceBuffer && sourceBuffer.updating) await waitUpdateEnd(sourceBuffer);
+                            try {
+                                sourceBuffer.appendBuffer(new Uint8Array(remainingData));
+                                await waitUpdateEnd(sourceBuffer);
+                                totalBytes += remainingData.byteLength;
+                            } catch (e) {
+                                console.warn('[MSE] Failed to append remaining data:', e);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[MSE] Failed to fetch remaining data:', e);
+                }
+            }
+            fileSizeInfo.textContent = 'Kích thước file: ' + (finalStatus.file_size / 1024).toFixed(1) + ' KB';
+        }
+        
         if (mediaSource && mediaSource.readyState === 'open') {
             try { mediaSource.endOfStream(); } catch (e) {}
         }
-        showBadge('done');
+        
+        if (finalStatus && finalStatus.status === 'failed') {
+            statusLbl.textContent = 'Lỗi tạo audio: ' + (finalStatus.error || 'unknown');
+            showBadge('error');
+        } else {
+            showBadge('done');
+        }
         btn.disabled = false;
     }
 

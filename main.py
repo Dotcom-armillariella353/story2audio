@@ -1,17 +1,35 @@
 import os
 import io
+import json
 import hashlib
 import asyncio
 import re
+import sys
+import time
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from typing import List, Dict, AsyncGenerator
+from pydantic import BaseModel
+from typing import List, Dict, AsyncGenerator, Optional
 import edge_tts
 from gtts import gTTS
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Suppress the benign Windows asyncio ProactorEventLoop socket shutdown error
+if sys.platform == "win32":
+    import asyncio.proactor_events
+
+    _original_call_connection_lost = asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost
+
+    def _patched_call_connection_lost(self, exc):
+        try:
+            _original_call_connection_lost(self, exc)
+        except OSError:
+            pass
+
+    asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost = _patched_call_connection_lost
 
 app = FastAPI(title="Story to Audio Streaming & Caching API")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -83,6 +101,77 @@ def get_cache_id(text: str, voice: str, engine: str) -> str:
     return hashlib.md5(f"{text}_{voice}_{engine}".encode()).hexdigest()
 
 
+def get_meta_path(cache_id: str) -> str:
+    """Path to metadata file for a cache entry."""
+    return os.path.join(CACHE_DIR, f"{cache_id}.json")
+
+
+def save_cache_meta(cache_id: str, data: dict) -> None:
+    """Save metadata for a cache entry."""
+    meta_path = get_meta_path(cache_id)
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def load_cache_meta(cache_id: str) -> Optional[dict]:
+    """Load metadata for a cache entry. Returns None if not found or invalid."""
+    meta_path = get_meta_path(cache_id)
+    if not os.path.exists(meta_path):
+        return None
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def is_cache_valid(cache_id: str) -> bool:
+    """Check if cache is complete and valid.
+    
+    A valid cache must have:
+    1. Both .mp3 and .json files exist
+    2. Metadata shows status='completed'
+    3. Actual file size matches expected size (if recorded)
+    """
+    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
+    if not os.path.exists(final_path):
+        return False
+    
+    meta = load_cache_meta(cache_id)
+    if not meta:
+        return False
+    
+    if meta.get("status") != "completed":
+        return False
+    
+    # Verify file size if we have it recorded
+    expected_size = meta.get("file_size")
+    if expected_size is not None:
+        actual_size = os.path.getsize(final_path)
+        if actual_size != expected_size:
+            return False
+    
+    return True
+
+
+def cleanup_incomplete_cache(cache_id: str) -> None:
+    """Remove incomplete cache files (both .mp3 and .json)."""
+    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
+    meta_path = get_meta_path(cache_id)
+    
+    if os.path.exists(final_path):
+        try:
+            os.remove(final_path)
+        except OSError:
+            pass
+    
+    if os.path.exists(meta_path):
+        try:
+            os.remove(meta_path)
+        except OSError:
+            pass
+
+
 def strip_id3v2(data: bytes) -> bytes:
     """Remove ID3v2 header so concatenated MP3 frames are seamless."""
     if len(data) >= 10 and data[:3] == b'ID3':
@@ -107,11 +196,34 @@ async def edge_tts_to_bytes(text: str, voice: str) -> bytes:
 
 
 def gtts_to_bytes(text: str) -> bytes:
-    """Synchronous gTTS -> bytes (run in executor)."""
-    tts = gTTS(text=text, lang='vi')
-    buf = io.BytesIO()
-    tts.write_to_fp(buf)
-    return buf.getvalue()
+    """Synchronous gTTS -> bytes (run in executor).
+
+    gTTS.stream() picks up proxy via urllib.request.getproxies() which reads
+    HTTP_PROXY / HTTPS_PROXY env vars (already set at startup when PROXY is
+    configured).  We add a retry loop with specific handling for socket/connection
+    errors to handle transient Google API failures.
+    """
+    last_exc = None
+    for attempt in range(3):
+        try:
+            tts = gTTS(text=text, lang='vi', timeout=15)
+            buf = io.BytesIO()
+            tts.write_to_fp(buf)
+            return buf.getvalue()
+        except Exception as exc:
+            last_exc = exc
+            # Log specific error types for better debugging
+            error_type = type(exc).__name__
+            if "socket" in error_type.lower() or "connection" in error_type.lower():
+                print(f"[WARN] gTTS attempt {attempt + 1} failed with {error_type}: {exc}")
+            else:
+                print(f"[WARN] gTTS attempt {attempt + 1} failed: {exc}")
+            
+            if attempt < 2:
+                # Longer delay for socket/connection errors
+                delay = 3 * (attempt + 1) if "socket" in error_type.lower() or "connection" in error_type.lower() else 2 * (attempt + 1)
+                time.sleep(delay)
+    raise last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -124,18 +236,31 @@ async def generate_chunks(text: str, voice: str, engine: str, cache_id: str):
 
     async with _generation_locks[cache_id]:
         final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
-        # Double-check after acquiring lock
-        if (
-            os.path.exists(final_path)
-            and cache_id in generation_status
-            and generation_status[cache_id]["status"] == "completed"
-        ):
+        
+        # Double-check after acquiring lock - verify cache is truly complete
+        if is_cache_valid(cache_id):
+            generation_status[cache_id] = {
+                "status": "completed",
+                "progress": 1,
+                "total": 1
+            }
             return
 
         chunks = split_text_into_chunks(text)
         total = len(chunks)
         generation_status[cache_id] = {"status": "processing", "progress": 0, "total": total}
+        
+        # Save initial metadata
+        save_cache_meta(cache_id, {
+            "status": "processing",
+            "progress": 0,
+            "total": total,
+            "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
+            "voice": voice,
+            "engine": engine,
+        })
 
+        # Clean up any incomplete files from previous attempts
         if os.path.exists(final_path):
             os.remove(final_path)
 
@@ -158,13 +283,39 @@ async def generate_chunks(text: str, voice: str, engine: str, cache_id: str):
                     f.write(audio)
 
                 generation_status[cache_id]["progress"] = i + 1
+                
+                # Update metadata with progress
+                save_cache_meta(cache_id, {
+                    "status": "processing",
+                    "progress": i + 1,
+                    "total": total,
+                    "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
+                    "voice": voice,
+                    "engine": engine,
+                })
 
+            # Mark as completed with final file size
+            final_size = os.path.getsize(final_path)
             generation_status[cache_id]["status"] = "completed"
+            save_cache_meta(cache_id, {
+                "status": "completed",
+                "progress": total,
+                "total": total,
+                "file_size": final_size,
+                "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
+                "voice": voice,
+                "engine": engine,
+            })
 
         except Exception as exc:
-            print(f"[ERROR] generate_chunks i={i}: {exc}")
+            print(f"[ERROR] generate_chunks chunk={i} engine={engine}: {type(exc).__name__}: {exc}")
             generation_status[cache_id]["status"] = "failed"
-            generation_status[cache_id]["error"] = str(exc)
+            generation_status[cache_id]["error"] = f"{type(exc).__name__}: {exc}"
+            save_cache_meta(cache_id, {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
+            })
 
 
 # ---------------------------------------------------------------------------
@@ -185,21 +336,31 @@ async def favicon():
     return FileResponse("static/favicon.svg", media_type="image/svg+xml")
 
 
-@app.get("/tts/start")
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "vi-VN-HoaiMyNeural"
+    engine: str = "edge"
+
+
+@app.post("/tts/start")
 async def start_tts(
     background_tasks: BackgroundTasks,
-    text: str = Query(...),
-    voice: str = Query("vi-VN-HoaiMyNeural"),
-    engine: str = Query("edge"),
+    request: TTSRequest,
 ):
+    text = request.text
+    engine = request.engine
+    # gTTS doesn't use voice - use empty string for cache consistency
+    voice = request.voice if engine == "edge" else ""
     cache_id = get_cache_id(text, voice, engine)
     final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
 
-    if os.path.exists(final_path) and (
-        cache_id not in generation_status
-        or generation_status[cache_id]["status"] == "completed"
-    ):
+    # Check if cache is valid (complete file with matching metadata)
+    if is_cache_valid(cache_id):
         return {"cache_id": cache_id, "status": "completed", "url": f"/tts/file/{cache_id}"}
+    
+    # Clean up any incomplete cache from previous failed attempts
+    if os.path.exists(final_path) or os.path.exists(get_meta_path(cache_id)):
+        cleanup_incomplete_cache(cache_id)
 
     if cache_id in generation_status and generation_status[cache_id]["status"] == "processing":
         return {"cache_id": cache_id, "status": "processing"}
@@ -359,13 +520,38 @@ async def stream_audio_live(cache_id: str):
                         yield data
 
             # Check if generation finished
-            done = (
-                cache_id not in generation_status
-                or generation_status[cache_id]["status"] != "processing"
-            )
-            if done and sent >= os.path.getsize(final_path):
-                break
-
+            # Priority: in-memory status > metadata file
+            is_processing = False
+            
+            # Check in-memory status first
+            if cache_id in generation_status:
+                status = generation_status[cache_id].get("status")
+                is_processing = status == "processing"
+                if status == "failed":
+                    break
+                if status == "completed":
+                    # Verify file size matches
+                    meta = load_cache_meta(cache_id)
+                    expected_size = meta.get("file_size") if meta else None
+                    if expected_size is None or sent >= expected_size:
+                        break
+                    # Wait for remaining data
+            else:
+                # Not in memory - check metadata
+                meta = load_cache_meta(cache_id)
+                if meta:
+                    meta_status = meta.get("status")
+                    if meta_status == "completed":
+                        # Already completed from previous run
+                        expected_size = meta.get("file_size")
+                        if expected_size and sent >= expected_size:
+                            break
+                    elif meta_status == "failed":
+                        break
+                    # If processing, continue waiting
+                    is_processing = meta_status == "processing"
+            
+            # If still processing or no status info, wait for more data
             await asyncio.sleep(0.2)
 
     return StreamingResponse(
