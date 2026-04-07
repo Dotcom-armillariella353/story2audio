@@ -4,42 +4,154 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chuyển đổi Truyện thành Audio</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.ico">
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 20px auto; padding: 0 20px; background-color: #f4f7f6; color: #333; }
-        h1 { color: #2c3e50; text-align: center; }
-        textarea { width: 100%; height: 200px; box-sizing: border-box; padding: 15px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; line-height: 1.5; resize: vertical; }
-        .controls { margin: 20px 0; display: flex; flex-wrap: wrap; gap: 15px; align-items: center; justify-content: center; }
-        select, button { padding: 10px 15px; border-radius: 5px; border: 1px solid #ddd; font-size: 15px; }
-        button { background-color: #3498db; color: white; border: none; cursor: pointer; transition: background-color 0.3s; font-weight: bold; }
-        button:hover { background-color: #2980b9; }
-        audio { width: 100%; margin-top: 10px; }
-        .progress-container { margin: 20px 0; display: none; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .progress-bar { width: 100%; background: #eee; height: 12px; border-radius: 6px; overflow: hidden; margin: 10px 0; }
-        .progress-fill { width: 0%; background: #2ecc71; height: 100%; transition: width 0.3s; }
-        .status-text { color: #2c3e50; font-weight: bold; margin-bottom: 5px; }
-        #playerContainer { display: none; margin-top: 20px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .info { color: #7f8c8d; font-size: 0.9em; margin-top: 10px; }
-        #progText { text-align: right; color: #7f8c8d; font-size: 0.85em; }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 820px;
+            margin: 30px auto;
+            padding: 0 20px;
+            background: #f0f4f8;
+            color: #2d3748;
+        }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 24px; }
+        textarea {
+            width: 100%;
+            height: 200px;
+            padding: 14px;
+            border: 1px solid #cbd5e0;
+            border-radius: 8px;
+            font-size: 15px;
+            line-height: 1.6;
+            resize: vertical;
+            background: #fff;
+        }
+        .controls {
+            margin: 18px 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: flex-end;
+            justify-content: center;
+        }
+        .ctrl-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .ctrl-group label {
+            font-size: 0.78em;
+            font-weight: 600;
+            color: #4a5568;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid #cbd5e0;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+        }
+        select:focus { outline: none; border-color: #3182ce; box-shadow: 0 0 0 2px rgba(49,130,206,0.2); }
+        button {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: none;
+            font-size: 14px;
+            background: #3182ce;
+            color: #fff;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+            align-self: flex-end;
+        }
+        button:hover { background: #2b6cb0; }
+        button:disabled { background: #a0aec0; cursor: not-allowed; }
+        .progress-container {
+            display: none;
+            background: #fff;
+            padding: 16px 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            margin: 16px 0;
+        }
+        .status-text { font-weight: 600; color: #2d3748; margin-bottom: 8px; }
+        .progress-bar {
+            width: 100%;
+            background: #e2e8f0;
+            height: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 8px 0;
+        }
+        .progress-fill {
+            width: 0%;
+            background: linear-gradient(90deg, #48bb78, #38a169);
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.4s ease;
+        }
+        #progText { text-align: right; color: #718096; font-size: 0.82em; margin-top: 4px; }
+        #playerContainer {
+            display: none;
+            background: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            margin-top: 16px;
+        }
+        #playerContainer h3 { margin: 0 0 12px; color: #2c3e50; }
+        audio { width: 100%; }
+        .info { color: #718096; font-size: 0.85em; margin-top: 10px; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        .badge-live   { background: #fed7d7; color: #c53030; }
+        .badge-done   { background: #c6f6d5; color: #276749; }
+        .badge-cached { background: #bee3f8; color: #2b6cb0; }
+        .badge-error  { background: #feebc8; color: #c05621; }
     </style>
 </head>
 <body>
     <h1>Chuyển đổi Truyện thành Audio</h1>
+
     <textarea id="textInput" placeholder="Nhập nội dung truyện tại đây...">Trong một ngôi làng nọ, có một cậu bé rất thông minh. Cậu thường xuyên giúp đỡ mọi người và được dân làng yêu quý. Một ngày, có một người khách lạ đến làng và đặt ra một câu đố khó. Cậu bé đã suy nghĩ rất lâu và cuối cùng đưa ra được câu trả lời chính xác. Dân làng vô cùng ngưỡng mộ và tự hào về cậu.</textarea>
 
     <div class="controls">
-        <label>Công cụ:
+        <div class="ctrl-group">
+            <label for="engine">Công cụ</label>
             <select id="engine">
                 <option value="edge">Edge-TTS (Chất lượng cao)</option>
                 <option value="gtts">Google TTS</option>
             </select>
-        </label>
-        <label>Giọng đọc (Edge):
+        </div>
+        <div class="ctrl-group" id="voiceGroup">
+            <label for="voice">Giọng đọc</label>
             <select id="voice">
                 <option value="vi-VN-HoaiMyNeural">Hoài Mỹ (Nữ)</option>
                 <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
             </select>
-        </label>
-        <button id="convertBtn">Chuyển sang Audio & Nghe</button>
+        </div>
+        <div class="ctrl-group">
+            <label for="speedSelect">Tốc độ</label>
+            <select id="speedSelect">
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+            </select>
+        </div>
+        <button id="convertBtn">&#9654; Chuyển sang Audio</button>
     </div>
 
     <div class="progress-container" id="progContainer">
@@ -49,139 +161,388 @@
     </div>
 
     <div id="playerContainer">
-        <h3 style="margin-top: 0;">Trình phát Audio</h3>
+        <h3 id="playerTitle">Trình phát Audio</h3>
         <audio id="audioPlayer" controls></audio>
         <p class="info" id="fileSizeInfo"></p>
     </div>
 
     <script>
-        let pollingInterval = null;
-        let currentCacheId = null;
-        let lastFileSize = 0;
-        let playerShown = false;
-        let isReloading = false;
+    // ============================================================
+    // State
+    // ============================================================
+    let pollingInterval = null;
+    let currentCacheId  = null;
+    let mediaSource     = null;
+    let sourceBuffer    = null;
+    let streamReader    = null;
 
-        document.getElementById('convertBtn').onclick = async function() {
-            const text = document.getElementById('textInput').value;
-            const engine = document.getElementById('engine').value;
-            const voice = document.getElementById('voice').value;
+    // Fallback state
+    let lastFileSize = 0;
+    let playerShown  = false;
+    let isReloading  = false;
 
-            if (!text.trim()) { alert('Vui lòng nhập văn bản!'); return; }
+    const player       = document.getElementById('audioPlayer');
+    const btn          = document.getElementById('convertBtn');
+    const progFill     = document.getElementById('progFill');
+    const progText     = document.getElementById('progText');
+    const statusLbl    = document.getElementById('statusLabel');
+    const fileSizeInfo = document.getElementById('fileSizeInfo');
+    const playerTitle  = document.getElementById('playerTitle');
+    const playerBox    = document.getElementById('playerContainer');
+    const progBox      = document.getElementById('progContainer');
+    const speedSelect  = document.getElementById('speedSelect');
+    const engineSel    = document.getElementById('engine');
+    const voiceGroup   = document.getElementById('voiceGroup');
 
-            // Reset
-            clearInterval(pollingInterval);
-            currentCacheId = null;
-            lastFileSize = 0;
-            playerShown = false;
-            isReloading = false;
-            document.getElementById('progContainer').style.display = 'block';
-            document.getElementById('progFill').style.width = '0%';
-            document.getElementById('statusLabel').innerText = 'Đang gửi yêu cầu...';
-            document.getElementById('playerContainer').style.display = 'none';
-            document.getElementById('progText').innerText = '0 / 0 đoạn';
-            document.getElementById('fileSizeInfo').innerText = '';
+    // Hide voice selector when Google TTS is selected (no voice choice)
+    function updateVoiceVisibility() {
+        voiceGroup.style.display = engineSel.value === 'gtts' ? 'none' : '';
+    }
+    engineSel.addEventListener('change', updateVoiceVisibility);
+    updateVoiceVisibility();
 
-            const params = new URLSearchParams({ text, engine, voice });
-            const response = await fetch('/tts/start?' + params.toString());
-            const data = await response.json();
-            currentCacheId = data.cache_id;
+    // Helper: get current playback rate
+    function getRate() { return parseFloat(speedSelect.value); }
 
-            if (data.status === 'completed') {
-                showPlayer(currentCacheId, 0);
-                updateProgress(1, 1);
-                document.getElementById('statusLabel').innerText = 'Hoàn thành (từ bộ nhớ tạm)!';
+    // Apply playback rate whenever selector changes
+    speedSelect.addEventListener('change', () => {
+        player.playbackRate = getRate();
+    });
+    // Re-apply on play event (some browsers reset rate on src change)
+    player.addEventListener('play', () => {
+        player.playbackRate = getRate();
+    });
+
+    // Check MediaSource support for audio/mpeg
+    const MSE_SUPPORTED = (
+        typeof MediaSource !== 'undefined' &&
+        MediaSource.isTypeSupported('audio/mpeg')
+    );
+    console.log('[TTS] MSE supported:', MSE_SUPPORTED);
+
+    // ============================================================
+    // Main handler
+    // ============================================================
+    btn.onclick = async function () {
+        const text   = document.getElementById('textInput').value;
+        const engine = document.getElementById('engine').value;
+        const voice  = document.getElementById('voice').value;
+
+        if (!text.trim()) { alert('Vui lòng nhập văn bản!'); return; }
+
+        resetUI();
+        btn.disabled = true;
+
+        const params = new URLSearchParams({ text, engine, voice });
+        let data;
+        try {
+            const res = await fetch('/tts/start?' + params.toString());
+            data = await res.json();
+        } catch (e) {
+            statusLbl.textContent = 'Lỗi kết nối!';
+            btn.disabled = false;
+            return;
+        }
+
+        currentCacheId = data.cache_id;
+
+        if (data.status === 'completed') {
+            updateProgress(1, 1);
+            statusLbl.textContent = 'Hoàn thành (từ bộ nhớ tạm)!';
+            showBadge('cached');
+            playDirect(currentCacheId);
+            btn.disabled = false;
+        } else {
+            showBadge('live');
+            if (MSE_SUPPORTED) {
+                startMSEMode(currentCacheId);
             } else {
-                startPolling(currentCacheId);
+                startFallbackMode(currentCacheId);
             }
-        };
+        }
+    };
 
-        function startPolling(cacheId) {
-            if (pollingInterval) clearInterval(pollingInterval);
-            pollingInterval = setInterval(async function() {
-                try {
-                    const res = await fetch('/tts/status/' + cacheId);
-                    const data = await res.json();
+    // ============================================================
+    // Method 1: MediaSource API - seamless streaming
+    // ============================================================
+    function startMSEMode(cacheId) {
+        startPolling(cacheId, false);
 
-                    updateProgress(data.progress || 0, data.total || 0);
-                    document.getElementById('fileSizeInfo').innerText = 
-                        'Kích thước file hiện tại: ' + (data.file_size / 1024 / 1024).toFixed(2) + ' MB';
+        mediaSource = new MediaSource();
+        player.src  = URL.createObjectURL(mediaSource);
+        playerBox.style.display = 'block';
 
-                    if (data.status === 'processing' || data.status === 'completed') {
-                        document.getElementById('statusLabel').innerText = 
-                            data.status === 'processing' 
-                                ? 'Đang xử lý đoạn ' + data.progress + '/' + data.total + '...' 
-                                : 'Hoàn thành!';
+        mediaSource.addEventListener('sourceopen', async () => {
+            try {
+                sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                sourceBuffer.mode = 'sequence';
+                await pumpStream(cacheId);
+            } catch (e) {
+                console.warn('[MSE] Error, falling back:', e);
+                cleanupMSE();
+                startFallbackMode(cacheId);
+            }
+        }, { once: true });
+    }
 
-                        // Hiển thị player ngay khi có chunk đầu tiên
-                        if (!playerShown && data.progress >= 1 && data.file_size > 0) {
-                            playerShown = true;
-                            lastFileSize = data.file_size;
-                            showPlayer(cacheId, 0);
-                        } else if (playerShown && !isReloading && data.file_size > lastFileSize) {
-                            // File lớn hơn và không đang reload: cập nhật audio
-                            lastFileSize = data.file_size;
+    function cleanupMSE() {
+        if (streamReader) { try { streamReader.cancel(); } catch(e) {} streamReader = null; }
+        if (mediaSource && mediaSource.readyState === 'open') {
+            try { mediaSource.endOfStream(); } catch(e) {}
+        }
+        if (player.src && player.src.startsWith('blob:')) {
+            URL.revokeObjectURL(player.src);
+        }
+        mediaSource  = null;
+        sourceBuffer = null;
+    }
+
+    async function pumpStream(cacheId) {
+        // Poll status + stream endpoint, bail early on failure
+        let response = null;
+        for (let attempt = 0; attempt < 24; attempt++) {
+            // Check generation status first
+            try {
+                const st = await fetch('/tts/status/' + cacheId);
+                const stData = await st.json();
+                if (stData.status === 'failed') {
+                    statusLbl.textContent = 'Lỗi tạo audio: ' + (stData.error || 'unknown');
+                    showBadge('error');
+                    btn.disabled = false;
+                    return;
+                }
+            } catch(e) {}
+
+            // Try stream endpoint
+            try {
+                const r = await fetch('/tts/stream/' + cacheId);
+                if (r.ok) { response = r; break; }
+                if (r.status === 503) {
+                    const body = await r.json().catch(() => ({}));
+                    statusLbl.textContent = 'Lỗi: ' + (body.detail || 'Không thể tạo audio');
+                    showBadge('error');
+                    btn.disabled = false;
+                    return;
+                }
+            } catch (e) {}
+            await sleep(500);
+        }
+
+        if (!response) {
+            console.warn('[MSE] Stream unavailable, falling back to polling mode');
+            cleanupMSE();
+            startFallbackMode(cacheId);
+            return;
+        }
+
+        streamReader = response.body.getReader();
+        let firstChunk = true;
+        let totalBytes = 0;
+
+        while (true) {
+            let result;
+            try { result = await streamReader.read(); }
+            catch (e) { console.warn('[MSE] Read error:', e); break; }
+            if (result.done) break;
+
+            const chunk = result.value;
+            totalBytes += chunk.byteLength;
+
+            if (sourceBuffer && sourceBuffer.updating) {
+                await waitUpdateEnd(sourceBuffer);
+            }
+            if (!mediaSource || mediaSource.readyState !== 'open') break;
+
+            try { sourceBuffer.appendBuffer(chunk); }
+            catch (e) { console.warn('[MSE] appendBuffer error:', e); break; }
+
+            if (firstChunk) {
+                firstChunk = false;
+                player.playbackRate = getRate();
+                player.play().catch(() => {});
+            }
+
+            fileSizeInfo.textContent =
+                'Dữ liệu đã nhận: ' + (totalBytes / 1024).toFixed(1) + ' KB';
+        }
+
+        // Finalize
+        if (sourceBuffer && sourceBuffer.updating) await waitUpdateEnd(sourceBuffer);
+        if (mediaSource && mediaSource.readyState === 'open') {
+            try { mediaSource.endOfStream(); } catch (e) {}
+        }
+        showBadge('done');
+        btn.disabled = false;
+    }
+
+    function waitUpdateEnd(sb) {
+        return new Promise(resolve =>
+            sb.addEventListener('updateend', resolve, { once: true })
+        );
+    }
+
+    // ============================================================
+    // Method 2: Fallback - polling + reload src
+    // ============================================================
+    function startFallbackMode(cacheId) {
+        lastFileSize = 0;
+        playerShown  = false;
+        isReloading  = false;
+        startPolling(cacheId, true);
+    }
+
+    function startPolling(cacheId, withReload) {
+        if (pollingInterval) clearInterval(pollingInterval);
+
+        pollingInterval = setInterval(async () => {
+            try {
+                const res  = await fetch('/tts/status/' + cacheId);
+                const data = await res.json();
+
+                updateProgress(data.progress || 0, data.total || 0);
+
+                if (data.status === 'processing' || data.status === 'completed') {
+                    statusLbl.textContent = data.status === 'processing'
+                        ? 'Đang xử lý đoạn ' + data.progress + '/' + data.total + '...'
+                        : 'Hoàn thành!';
+
+                    if (withReload) {
+                        const fsize = data.file_size || 0;
+                        fileSizeInfo.textContent =
+                            'Kích thước file: ' + (fsize / 1024 / 1024).toFixed(2) + ' MB';
+
+                        if (!playerShown && data.progress >= 1 && fsize > 0) {
+                            playerShown  = true;
+                            lastFileSize = fsize;
+                            showPlayerFallback(cacheId, 0);
+                        } else if (playerShown && !isReloading && fsize > lastFileSize) {
+                            lastFileSize = fsize;
                             reloadAudioKeepTime(cacheId);
                         }
                     }
-
-                    if (data.status === 'completed') {
-                        clearInterval(pollingInterval);
-                        // Reload lần cuối sau 1s để đảm bảo file đầy đủ
-                        setTimeout(function() {
-                            if (!isReloading) reloadAudioKeepTime(cacheId);
-                        }, 1000);
-                    }
-                } catch(e) {
-                    console.error('Lỗi khi kiểm tra trạng thái:', e);
                 }
-            }, 2000);
-        }
 
-        function updateProgress(current, total) {
-            const percent = total > 0 ? (current / total) * 100 : 0;
-            document.getElementById('progFill').style.width = percent + '%';
-            document.getElementById('progText').innerText = current + ' / ' + total + ' đoạn';
-        }
+                if (data.status === 'failed') {
+                    clearInterval(pollingInterval);
+                    statusLbl.textContent = 'Lỗi tạo audio: ' + (data.error || 'unknown');
+                    showBadge('error');
+                    btn.disabled = false;
+                }
 
-        function setPlayerSrc(cacheId, onReady) {
-            const player = document.getElementById('audioPlayer');
-            // Remove old listeners to prevent duplicate triggers
-            player.oncanplay = null;
-            player.onerror = null;
-            isReloading = true;
-            player.src = '/tts/file/' + cacheId + '?t=' + Date.now();
-            const handleCanPlay = function() {
-                player.removeEventListener('canplay', handleCanPlay);
-                player.removeEventListener('error', handleError);
-                isReloading = false;
-                onReady(player);
-            };
-            const handleError = function() {
-                player.removeEventListener('canplay', handleCanPlay);
-                player.removeEventListener('error', handleError);
-                isReloading = false;
-            };
-            player.addEventListener('canplay', handleCanPlay);
-            player.addEventListener('error', handleError);
-        }
+                if (data.status === 'completed') {
+                    clearInterval(pollingInterval);
+                    showBadge('done');
+                    btn.disabled = false;
+                    if (withReload) {
+                        setTimeout(() => {
+                            if (!isReloading) reloadAudioKeepTime(cacheId);
+                        }, 800);
+                    }
+                }
+            } catch (e) {
+                console.error('Polling error:', e);
+            }
+        }, 1500);
+    }
 
-        function showPlayer(cacheId, startTime) {
-            document.getElementById('playerContainer').style.display = 'block';
-            setPlayerSrc(cacheId, function(player) {
-                if (startTime > 0) player.currentTime = startTime;
-                player.play().catch(function() {});
-            });
-        }
+    function showPlayerFallback(cacheId, startTime) {
+        playerBox.style.display = 'block';
+        setPlayerSrc(cacheId, (p) => {
+            if (startTime > 0) p.currentTime = startTime;
+            p.play().catch(() => {});
+        });
+    }
 
-        function reloadAudioKeepTime(cacheId) {
-            const player = document.getElementById('audioPlayer');
-            const savedTime = player.currentTime;
-            const wasPlaying = !player.paused;
-            setPlayerSrc(cacheId, function(player) {
-                player.currentTime = savedTime;
-                if (wasPlaying) player.play().catch(function() {});
-            });
-        }
+    function reloadAudioKeepTime(cacheId) {
+        const savedTime  = player.currentTime;
+        const wasPlaying = !player.paused;
+        setPlayerSrc(cacheId, (p) => {
+            p.currentTime = savedTime;
+            if (wasPlaying) p.play().catch(() => {});
+        });
+    }
+
+    function setPlayerSrc(cacheId, onReady) {
+        isReloading = true;
+        player.src  = '/tts/file/' + cacheId + '?t=' + Date.now();
+        const onCanPlay = () => {
+            player.removeEventListener('canplay', onCanPlay);
+            player.removeEventListener('error', onErr);
+            isReloading = false;
+            onReady(player);
+        };
+        const onErr = () => {
+            player.removeEventListener('canplay', onCanPlay);
+            player.removeEventListener('error', onErr);
+            isReloading = false;
+        };
+        player.addEventListener('canplay', onCanPlay);
+        player.addEventListener('error', onErr);
+    }
+
+    // ============================================================
+    // Play directly from cache
+    // ============================================================
+    function playDirect(cacheId) {
+        playerBox.style.display = 'block';
+        player.src = '/tts/file/' + cacheId;
+        player.addEventListener('canplay', function onCan() {
+            player.removeEventListener('canplay', onCan);
+            player.playbackRate = getRate();
+            player.play().catch(() => {});
+        }, { once: true });
+    }
+
+    // ============================================================
+    // UI helpers
+    // ============================================================
+    function updateProgress(current, total) {
+        const pct = total > 0 ? (current / total) * 100 : 0;
+        progFill.style.width = pct + '%';
+        progText.textContent  = current + ' / ' + total + ' đoạn';
+    }
+
+    function showBadge(type) {
+        const old = playerTitle.querySelector('.badge');
+        if (old) old.remove();
+        const badge = document.createElement('span');
+        badge.className = 'badge badge-' + type;
+        badge.textContent = {
+            live:   '● LIVE',
+            done:   '✓ Hoàn thành',
+            cached: '★ Cache',
+            error:  '⚠ Lỗi',
+        }[type] || type;
+        playerTitle.appendChild(badge);
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function resetUI() {
+        cleanupMSE();
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+        currentCacheId  = null;
+        lastFileSize    = 0;
+        playerShown     = false;
+        isReloading     = false;
+
+        player.pause();
+        player.removeAttribute('src');
+        player.load();
+
+        progBox.style.display   = 'block';
+        playerBox.style.display = 'none';
+        progFill.style.width    = '0%';
+        statusLbl.textContent   = 'Đang gửi yêu cầu...';
+        progText.textContent    = '0 / 0 đoạn';
+        fileSizeInfo.textContent = '';
+
+        const old = playerTitle.querySelector('.badge');
+        if (old) old.remove();
+    }
     </script>
 </body>
 </html>
