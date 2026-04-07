@@ -6,22 +6,26 @@ import asyncio
 import re
 import sys
 import time
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request
+from typing import List, Dict, AsyncGenerator, Optional
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Dict, AsyncGenerator, Optional
+
 import edge_tts
 from gtts import gTTS
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Suppress the benign Windows asyncio ProactorEventLoop socket shutdown error
+# Suppress benign Windows asyncio ProactorEventLoop socket shutdown errors
 if sys.platform == "win32":
     import asyncio.proactor_events
 
-    _original_call_connection_lost = asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost
+    _original_call_connection_lost = (
+        asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost
+    )
 
     def _patched_call_connection_lost(self, exc):
         try:
@@ -29,7 +33,9 @@ if sys.platform == "win32":
         except OSError:
             pass
 
-    asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost = _patched_call_connection_lost
+    asyncio.proactor_events._ProactorBasePipeTransport._call_connection_lost = (
+        _patched_call_connection_lost
+    )
 
 app = FastAPI(title="Story to Audio Streaming & Caching API")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -39,9 +45,10 @@ CACHE_DIR = "audio_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 if PROXY:
-    os.environ['HTTP_PROXY'] = PROXY
-    os.environ['HTTPS_PROXY'] = PROXY
+    os.environ["HTTP_PROXY"] = PROXY
+    os.environ["HTTPS_PROXY"] = PROXY
 
+# In-memory runtime status (best effort); metadata file remains source of truth across restarts
 generation_status: Dict[str, dict] = {}
 _generation_locks: Dict[str, asyncio.Lock] = {}
 
@@ -52,16 +59,19 @@ _generation_locks: Dict[str, asyncio.Lock] = {}
 
 def split_text_into_chunks(text: str) -> List[str]:
     """
-    Split text into progressively larger chunks:
+    Split text into progressively larger chunks while preserving sentence boundaries.
+
     - Chunk 1: first sentence only  -> fastest first audio
     - Chunk 2: up to 400 chars
     - Chunk 3: up to 800 chars
     - Chunk 4: up to 1200 chars
-    - Chunk 5+: up to 1800 chars (max)
-    Always split on sentence boundaries.
+    - Chunk 5+: up to 1800 chars
     """
-    # Split on sentence-ending punctuation followed by whitespace
-    sentences = re.split(r'(?<=[.!?\u2026])\s+', text.strip())
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    sentences = re.split(r'(?<=[.!?…])\s+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
 
     if not sentences:
@@ -69,8 +79,7 @@ def split_text_into_chunks(text: str) -> List[str]:
     if len(sentences) == 1:
         return sentences
 
-    chunks = [sentences[0]]  # chunk 1: first sentence only
-
+    chunks: List[str] = [sentences[0]]
     current = ""
     chunk_sizes = [400, 800, 1200, 1600, 1800]
     size_idx = 0
@@ -78,7 +87,6 @@ def split_text_into_chunks(text: str) -> List[str]:
     for sentence in sentences[1:]:
         max_len = chunk_sizes[min(size_idx, len(chunk_sizes) - 1)]
         candidate = (current + " " + sentence).strip() if current else sentence
-
         if len(candidate) <= max_len:
             current = candidate
         else:
@@ -94,77 +102,59 @@ def split_text_into_chunks(text: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Audio helpers
+# Cache helpers
 # ---------------------------------------------------------------------------
 
 def get_cache_id(text: str, voice: str, engine: str) -> str:
-    return hashlib.md5(f"{text}_{voice}_{engine}".encode()).hexdigest()
+    return hashlib.md5(f"{text}_{voice}_{engine}".encode("utf-8")).hexdigest()
+
+
+def get_audio_path(cache_id: str) -> str:
+    return os.path.join(CACHE_DIR, f"{cache_id}.mp3")
 
 
 def get_meta_path(cache_id: str) -> str:
-    """Path to metadata file for a cache entry."""
     return os.path.join(CACHE_DIR, f"{cache_id}.json")
 
 
 def save_cache_meta(cache_id: str, data: dict) -> None:
-    """Save metadata for a cache entry."""
     meta_path = get_meta_path(cache_id)
-    with open(meta_path, 'w', encoding='utf-8') as f:
+    tmp_path = meta_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp_path, meta_path)
 
 
 def load_cache_meta(cache_id: str) -> Optional[dict]:
-    """Load metadata for a cache entry. Returns None if not found or invalid."""
     meta_path = get_meta_path(cache_id)
     if not os.path.exists(meta_path):
         return None
     try:
-        with open(meta_path, 'r', encoding='utf-8') as f:
+        with open(meta_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (json.JSONDecodeError, OSError):
         return None
 
 
-def is_cache_valid(cache_id: str) -> bool:
-    """Check if cache is complete and valid.
-    
-    A valid cache must have:
-    1. Both .mp3 and .json files exist
-    2. Metadata shows status='completed'
-    3. Actual file size matches expected size (if recorded)
-    """
-    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
-    if not os.path.exists(final_path):
-        return False
-    
-    meta = load_cache_meta(cache_id)
-    if not meta:
-        return False
-    
-    if meta.get("status") != "completed":
-        return False
-    
-    # Verify file size if we have it recorded
-    expected_size = meta.get("file_size")
-    if expected_size is not None:
-        actual_size = os.path.getsize(final_path)
-        if actual_size != expected_size:
-            return False
-    
-    return True
+def remove_audio_file(cache_id: str) -> None:
+    audio_path = get_audio_path(cache_id)
+    if os.path.exists(audio_path):
+        try:
+            os.remove(audio_path)
+        except OSError:
+            pass
 
 
 def cleanup_incomplete_cache(cache_id: str) -> None:
-    """Remove incomplete cache files (both .mp3 and .json)."""
-    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
+    audio_path = get_audio_path(cache_id)
     meta_path = get_meta_path(cache_id)
-    
-    if os.path.exists(final_path):
+
+    if os.path.exists(audio_path):
         try:
-            os.remove(final_path)
+            os.remove(audio_path)
         except OSError:
             pass
-    
+
     if os.path.exists(meta_path):
         try:
             os.remove(meta_path)
@@ -172,56 +162,98 @@ def cleanup_incomplete_cache(cache_id: str) -> None:
             pass
 
 
+def is_cache_valid(cache_id: str) -> bool:
+    audio_path = get_audio_path(cache_id)
+    if not os.path.exists(audio_path):
+        return False
+
+    meta = load_cache_meta(cache_id)
+    if not meta:
+        return False
+
+    if meta.get("status") != "completed":
+        return False
+
+    expected_size = meta.get("file_size")
+    if expected_size is None:
+        return False
+
+    try:
+        actual_size = os.path.getsize(audio_path)
+    except OSError:
+        return False
+
+    return actual_size == expected_size and actual_size > 0
+
+
+def get_effective_status(cache_id: str) -> Optional[dict]:
+    """Return current status using in-memory state first, then metadata on disk."""
+    audio_path = get_audio_path(cache_id)
+    file_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
+
+    if cache_id in generation_status:
+        status = dict(generation_status[cache_id])
+        status["file_size"] = file_size
+        return status
+
+    meta = load_cache_meta(cache_id)
+    if meta:
+        status = dict(meta)
+        status["file_size"] = file_size
+        return status
+
+    if is_cache_valid(cache_id):
+        return {"status": "completed", "progress": 1, "total": 1, "file_size": file_size}
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Audio helpers
+# ---------------------------------------------------------------------------
+
 def strip_id3v2(data: bytes) -> bytes:
     """Remove ID3v2 header so concatenated MP3 frames are seamless."""
-    if len(data) >= 10 and data[:3] == b'ID3':
+    if len(data) >= 10 and data[:3] == b"ID3":
         size = (
-            ((data[6] & 0x7F) << 21) |
-            ((data[7] & 0x7F) << 14) |
-            ((data[8] & 0x7F) << 7) |
-            (data[9] & 0x7F)
+            ((data[6] & 0x7F) << 21)
+            | ((data[7] & 0x7F) << 14)
+            | ((data[8] & 0x7F) << 7)
+            | (data[9] & 0x7F)
         )
-        return data[size + 10:]
+        return data[size + 10 :]
     return data
 
 
 async def edge_tts_to_bytes(text: str, voice: str) -> bytes:
-    """Stream edge-tts directly into memory (no temp file)."""
     communicate = edge_tts.Communicate(text, voice, proxy=PROXY)
-    parts = []
+    parts: List[bytes] = []
     async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
+        if chunk.get("type") == "audio":
             parts.append(chunk["data"])
     return b"".join(parts)
 
 
 def gtts_to_bytes(text: str) -> bytes:
-    """Synchronous gTTS -> bytes (run in executor).
-
-    gTTS.stream() picks up proxy via urllib.request.getproxies() which reads
-    HTTP_PROXY / HTTPS_PROXY env vars (already set at startup when PROXY is
-    configured).  We add a retry loop with specific handling for socket/connection
-    errors to handle transient Google API failures.
+    """
+    Synchronous gTTS -> bytes (run in executor).
+    Retries transient network/socket failures.
     """
     last_exc = None
     for attempt in range(3):
         try:
-            tts = gTTS(text=text, lang='vi', timeout=15)
+            tts = gTTS(text=text, lang="vi", timeout=15)
             buf = io.BytesIO()
             tts.write_to_fp(buf)
             return buf.getvalue()
         except Exception as exc:
             last_exc = exc
-            # Log specific error types for better debugging
             error_type = type(exc).__name__
-            if "socket" in error_type.lower() or "connection" in error_type.lower():
-                print(f"[WARN] gTTS attempt {attempt + 1} failed with {error_type}: {exc}")
-            else:
-                print(f"[WARN] gTTS attempt {attempt + 1} failed: {exc}")
-            
+            print(f"[WARN] gTTS attempt {attempt + 1} failed with {error_type}: {exc}")
             if attempt < 2:
-                # Longer delay for socket/connection errors
-                delay = 3 * (attempt + 1) if "socket" in error_type.lower() or "connection" in error_type.lower() else 2 * (attempt + 1)
+                delay = 3 * (attempt + 1) if any(
+                    x in error_type.lower() for x in ("socket", "connection", "timeout")
+                ) else 2 * (attempt + 1)
                 time.sleep(delay)
     raise last_exc
 
@@ -235,88 +267,112 @@ async def generate_chunks(text: str, voice: str, engine: str, cache_id: str):
         _generation_locks[cache_id] = asyncio.Lock()
 
     async with _generation_locks[cache_id]:
-        final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
-        
-        # Double-check after acquiring lock - verify cache is truly complete
+        audio_path = get_audio_path(cache_id)
+
         if is_cache_valid(cache_id):
-            generation_status[cache_id] = {
-                "status": "completed",
-                "progress": 1,
-                "total": 1
-            }
+            generation_status[cache_id] = {"status": "completed", "progress": 1, "total": 1}
             return
 
         chunks = split_text_into_chunks(text)
+        if not chunks:
+            generation_status[cache_id] = {"status": "failed", "error": "Text must not be empty"}
+            save_cache_meta(
+                cache_id,
+                {
+                    "status": "failed",
+                    "error": "Text must not be empty",
+                    "text_hash": hashlib.md5(text.encode("utf-8")).hexdigest()[:16],
+                    "voice": voice,
+                    "engine": engine,
+                },
+            )
+            return
+
         total = len(chunks)
         generation_status[cache_id] = {"status": "processing", "progress": 0, "total": total}
-        
-        # Save initial metadata
-        save_cache_meta(cache_id, {
-            "status": "processing",
-            "progress": 0,
-            "total": total,
-            "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
-            "voice": voice,
-            "engine": engine,
-        })
+        save_cache_meta(
+            cache_id,
+            {
+                "status": "processing",
+                "progress": 0,
+                "total": total,
+                "text_hash": hashlib.md5(text.encode("utf-8")).hexdigest()[:16],
+                "voice": voice,
+                "engine": engine,
+            },
+        )
 
-        # Clean up any incomplete files from previous attempts
-        if os.path.exists(final_path):
-            os.remove(final_path)
+        remove_audio_file(cache_id)
+        loop = asyncio.get_running_loop()
 
         try:
             for i, chunk_text in enumerate(chunks):
                 if engine == "edge":
                     audio = await edge_tts_to_bytes(chunk_text, voice)
                 else:
-                    loop = asyncio.get_event_loop()
                     audio = await loop.run_in_executor(None, gtts_to_bytes, chunk_text)
 
                 if not audio:
                     continue
 
-                # Strip ID3v2 from chunk 2+ so frames concatenate cleanly
                 if i > 0:
                     audio = strip_id3v2(audio)
 
-                with open(final_path, 'ab') as f:
+                with open(audio_path, "ab") as f:
                     f.write(audio)
+                    f.flush()
 
+                current_size = os.path.getsize(audio_path)
                 generation_status[cache_id]["progress"] = i + 1
-                
-                # Update metadata with progress
-                save_cache_meta(cache_id, {
-                    "status": "processing",
-                    "progress": i + 1,
+                save_cache_meta(
+                    cache_id,
+                    {
+                        "status": "processing",
+                        "progress": i + 1,
+                        "total": total,
+                        "current_file_size": current_size,
+                        "text_hash": hashlib.md5(text.encode("utf-8")).hexdigest()[:16],
+                        "voice": voice,
+                        "engine": engine,
+                    },
+                )
+
+            final_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
+            if final_size <= 0:
+                raise RuntimeError("Generated audio file is empty")
+
+            generation_status[cache_id] = {"status": "completed", "progress": total, "total": total}
+            save_cache_meta(
+                cache_id,
+                {
+                    "status": "completed",
+                    "progress": total,
                     "total": total,
-                    "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
+                    "file_size": final_size,
+                    "text_hash": hashlib.md5(text.encode("utf-8")).hexdigest()[:16],
                     "voice": voice,
                     "engine": engine,
-                })
-
-            # Mark as completed with final file size
-            final_size = os.path.getsize(final_path)
-            generation_status[cache_id]["status"] = "completed"
-            # Save metadata with file_size immediately to avoid race condition
-            save_cache_meta(cache_id, {
-                "status": "completed",
-                "progress": total,
-                "total": total,
-                "file_size": final_size,
-                "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
-                "voice": voice,
-                "engine": engine,
-            })
-
+                },
+            )
         except Exception as exc:
-            print(f"[ERROR] generate_chunks chunk={i} engine={engine}: {type(exc).__name__}: {exc}")
-            generation_status[cache_id]["status"] = "failed"
-            generation_status[cache_id]["error"] = f"{type(exc).__name__}: {exc}"
-            save_cache_meta(cache_id, {
+            print(f"[ERROR] generate_chunks engine={engine}: {type(exc).__name__}: {exc}")
+            generation_status[cache_id] = {
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
-                "text_hash": hashlib.md5(text.encode()).hexdigest()[:16],
-            })
+            }
+            remove_audio_file(cache_id)
+            save_cache_meta(
+                cache_id,
+                {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "text_hash": hashlib.md5(text.encode("utf-8")).hexdigest()[:16],
+                    "voice": voice,
+                    "engine": engine,
+                },
+            )
+        finally:
+            _generation_locks.pop(cache_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +381,7 @@ async def generate_chunks(text: str, voice: str, engine: str, cache_id: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    path = "templates/index.html"
+    path = os.path.join("templates", "index.html")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
@@ -344,27 +400,30 @@ class TTSRequest(BaseModel):
 
 
 @app.post("/tts/start")
-async def start_tts(
-    background_tasks: BackgroundTasks,
-    request: TTSRequest,
-):
-    text = request.text
-    engine = request.engine
-    # gTTS doesn't use voice - use empty string for cache consistency
-    voice = request.voice if engine == "edge" else ""
-    cache_id = get_cache_id(text, voice, engine)
-    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
+async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
+    text = (request.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text must not be empty")
 
-    # Check if cache is valid (complete file with matching metadata)
+    engine = (request.engine or "edge").lower().strip()
+    if engine not in {"edge", "gtts"}:
+        raise HTTPException(status_code=400, detail="Unsupported engine")
+
+    voice = request.voice.strip() if engine == "edge" else ""
+    cache_id = get_cache_id(text, voice, engine)
+
     if is_cache_valid(cache_id):
         return {"cache_id": cache_id, "status": "completed", "url": f"/tts/file/{cache_id}"}
-    
-    # Clean up any incomplete cache from previous failed attempts
-    if os.path.exists(final_path) or os.path.exists(get_meta_path(cache_id)):
-        cleanup_incomplete_cache(cache_id)
 
-    if cache_id in generation_status and generation_status[cache_id]["status"] == "processing":
+    current = generation_status.get(cache_id)
+    if current and current.get("status") == "processing":
         return {"cache_id": cache_id, "status": "processing"}
+
+    # Clean up stale or incomplete cache before restarting generation
+    audio_path = get_audio_path(cache_id)
+    meta_path = get_meta_path(cache_id)
+    if os.path.exists(audio_path) or os.path.exists(meta_path):
+        cleanup_incomplete_cache(cache_id)
 
     background_tasks.add_task(generate_chunks, text, voice, engine, cache_id)
     return {"cache_id": cache_id, "status": "started"}
@@ -372,103 +431,33 @@ async def start_tts(
 
 @app.get("/tts/status/{cache_id}")
 async def get_status(cache_id: str):
-    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
-    file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
-
-    if cache_id not in generation_status:
-        if os.path.exists(final_path):
-            return {"status": "completed", "progress": 1, "total": 1, "file_size": file_size}
+    status = get_effective_status(cache_id)
+    if not status:
         raise HTTPException(status_code=404, detail="Not found")
-
-    status = dict(generation_status[cache_id])
-    status["file_size"] = file_size
     return status
 
 
 @app.get("/tts/file/{cache_id}")
 async def get_audio_file(cache_id: str, request: Request):
     """
-    Serve audio with Range support.
-    While generating: reports an inflated Content-Length so the browser
-    keeps reading, and the generator waits for new data to arrive.
+    Serve only completed, verified cache files.
+    Live playback while generating must use /tts/stream/{cache_id}.
     """
-    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
-    if not os.path.exists(final_path):
+    if not is_cache_valid(cache_id):
+        status = get_effective_status(cache_id)
+        if status and status.get("status") == "processing":
+            raise HTTPException(status_code=409, detail="Audio is still being generated. Use /tts/stream for live playback.")
         raise HTTPException(status_code=404, detail="Audio not ready")
 
-    file_size = os.path.getsize(final_path)
-    is_processing = (
-        cache_id in generation_status
-        and generation_status[cache_id]["status"] == "processing"
-    )
-
-    range_header = request.headers.get("range")
-
-    if range_header:
-        parts = range_header.replace("bytes=", "").split("-")
-        start = int(parts[0]) if parts[0] else 0
-        end_req = int(parts[1]) if len(parts) > 1 and parts[1] else None
-
-        if start >= file_size:
-            raise HTTPException(status_code=416, detail="Range Not Satisfiable")
-
-        # Inflate reported size while still generating
-        reported_size = file_size
-        if is_processing:
-            st = generation_status[cache_id]
-            progress = max(st["progress"], 1)
-            total = max(st["total"], 1)
-            estimated = int(file_size * total / progress * 1.1)
-            reported_size = max(estimated, file_size + 5 * 1024 * 1024)
-
-        end = end_req if end_req is not None else file_size - 1
-        end = min(end, file_size - 1)
-        resp_len = end - start + 1
-        # Use a mutable container so the inner async generator can update it
-        _window = [resp_len]
-
-        async def iter_range() -> AsyncGenerator[bytes, None]:
-            READ = 65536
-            sent = 0
-            with open(final_path, "rb") as f:
-                f.seek(start)
-                while sent < _window[0]:
-                    data = f.read(READ)
-                    if data:
-                        sent += len(data)
-                        yield data
-                    else:
-                        # No data yet - wait if still generating
-                        still = (
-                            cache_id in generation_status
-                            and generation_status[cache_id]["status"] == "processing"
-                        )
-                        if still:
-                            await asyncio.sleep(0.25)
-                            new_size = os.path.getsize(final_path)
-                            if new_size > start + sent:
-                                f.seek(start + sent)
-                                # Expand window if no explicit end was requested
-                                if end_req is None:
-                                    _window[0] = new_size - start
-                                continue
-                        else:
-                            break
-
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{reported_size}",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(resp_len),
-            "Content-Type": "audio/mpeg",
-            "Cache-Control": "no-cache",
-        }
-        return StreamingResponse(iter_range(), status_code=206, headers=headers)
-
-    # No Range header - serve full file
+    audio_path = get_audio_path(cache_id)
     return FileResponse(
-        final_path,
+        audio_path,
         media_type="audio/mpeg",
-        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache"},
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=31536000, immutable",
+        },
+        filename=f"{cache_id}.mp3",
     )
 
 
@@ -476,120 +465,70 @@ async def get_audio_file(cache_id: str, request: Request):
 async def stream_audio_live(cache_id: str):
     """
     True live-streaming endpoint using chunked transfer encoding.
-    Sends audio bytes as soon as they are written to disk.
-    Designed for use with the MediaSource API on the frontend.
+    Sends bytes as soon as they are appended to disk.
+    Intended for MediaSource API on the frontend.
     """
-    final_path = os.path.join(CACHE_DIR, f"{cache_id}.mp3")
+    audio_path = get_audio_path(cache_id)
 
-    # Wait up to 10 s for the file to appear, bail early if generation failed
-    for _ in range(100):
-        if os.path.exists(final_path):
+    # Wait a bit for the first chunk to appear, or fail early if generation failed
+    for _ in range(150):  # up to 15 seconds
+        if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
             break
-        # Bail early if generation already failed
-        if (
-            cache_id in generation_status
-            and generation_status[cache_id]["status"] == "failed"
-        ):
-            err = generation_status[cache_id].get("error", "generation failed")
+        st = get_effective_status(cache_id)
+        if st and st.get("status") == "failed":
+            err = st.get("error", "generation failed")
             raise HTTPException(status_code=503, detail=f"Generation failed: {err}")
         await asyncio.sleep(0.1)
     else:
-        # Final check: maybe it failed right at the end
-        if (
-            cache_id in generation_status
-            and generation_status[cache_id]["status"] == "failed"
-        ):
-            err = generation_status[cache_id].get("error", "generation failed")
+        st = get_effective_status(cache_id)
+        if st and st.get("status") == "failed":
+            err = st.get("error", "generation failed")
             raise HTTPException(status_code=503, detail=f"Generation failed: {err}")
         raise HTTPException(status_code=404, detail="Audio not ready")
 
     async def generate() -> AsyncGenerator[bytes, None]:
-        READ = 8192  # small chunks -> low latency
+        read_size = 64 * 1024
         sent = 0
-        last_file_size = 0
-        stable_count = 0  # Count consecutive stable file size checks
-        min_stable_checks = 3  # Require 3 consecutive stable checks before ending
+        stable_completed_checks = 0
 
         while True:
-            cur_size = os.path.getsize(final_path)
-
-            if cur_size > sent:
-                with open(final_path, "rb") as f:
-                    f.seek(sent)
-                    while True:
-                        data = f.read(READ)
-                        if not data:
-                            break
-                        sent += len(data)
-                        yield data
-                # Reset stable count when we send new data
-                stable_count = 0
-                last_file_size = cur_size
-
-            # Check if generation finished
-            # Priority: in-memory status > metadata file
-            is_processing = False
-            
-            # Check in-memory status first
-            if cache_id in generation_status:
-                status = generation_status[cache_id].get("status")
-                is_processing = status == "processing"
-                if status == "failed":
-                    break
-                if status == "completed":
-                    # Get expected file size from metadata
-                    meta = load_cache_meta(cache_id)
-                    expected_size = meta.get("file_size") if meta else None
-                    
-                    # If we have expected size, verify we've sent all data
-                    if expected_size is not None:
-                        if sent >= expected_size:
-                            break
-                        # Wait for remaining data to be written
-                    else:
-                        # Metadata not yet saved - check if file size is stable
-                        # This handles the race condition where status is completed
-                        # but metadata hasn't been saved yet
-                        if cur_size == last_file_size:
-                            stable_count += 1
-                            if stable_count >= min_stable_checks:
-                                # File size stable for multiple checks, likely done
+            if os.path.exists(audio_path):
+                cur_size = os.path.getsize(audio_path)
+                if cur_size > sent:
+                    with open(audio_path, "rb") as f:
+                        f.seek(sent)
+                        while sent < cur_size:
+                            chunk = f.read(min(read_size, cur_size - sent))
+                            if not chunk:
                                 break
-                        else:
-                            stable_count = 0
-                            last_file_size = cur_size
-            else:
-                # Not in memory - check metadata
-                meta = load_cache_meta(cache_id)
-                if meta:
-                    meta_status = meta.get("status")
-                    if meta_status == "completed":
-                        # Already completed from previous run
-                        expected_size = meta.get("file_size")
-                        if expected_size and sent >= expected_size:
-                            break
-                        # If no expected_size, check file stability
-                        if expected_size is None:
-                            if cur_size == last_file_size:
-                                stable_count += 1
-                                if stable_count >= min_stable_checks:
-                                    break
-                            else:
-                                stable_count = 0
-                                last_file_size = cur_size
-                    elif meta_status == "failed":
+                            sent += len(chunk)
+                            yield chunk
+                    stable_completed_checks = 0
+
+            st = get_effective_status(cache_id)
+            state = st.get("status") if st else None
+
+            if state == "failed":
+                break
+
+            if state == "completed":
+                expected_size = st.get("file_size") or 0
+                if expected_size > 0 and sent >= expected_size:
+                    stable_completed_checks += 1
+                    if stable_completed_checks >= 2:
                         break
-                    # If processing, continue waiting
-                    is_processing = meta_status == "processing"
-            
-            # If still processing or no status info, wait for more data
+                else:
+                    stable_completed_checks = 0
+
             await asyncio.sleep(0.2)
 
     return StreamingResponse(
         generate(),
+        media_type="audio/mpeg",
         headers={
-            "Content-Type": "audio/mpeg",
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
             "X-Accel-Buffering": "no",
         },
     )
@@ -597,4 +536,5 @@ async def stream_audio_live(cache_id: str):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

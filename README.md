@@ -1,162 +1,424 @@
-# Story to Audio (TTS Streaming)
+# Story2Audio
 
-Ứng dụng chuyển đổi văn bản truyện thành audio với tính năng streaming real-time. Sử dụng FastAPI làm backend và HTML/JavaScript làm frontend.
+Ứng dụng **FastAPI** chuyển văn bản / truyện tiếng Việt thành audio MP3, hỗ trợ:
 
-## Tính năng
+- **Live streaming** khi đang tạo audio (qua `MediaSource` + endpoint `/tts/stream/{cache_id}`)
+- **Cache audio** theo nội dung + engine + giọng đọc để phát lại nhanh
+- Hỗ trợ 2 engine TTS:
+  - **Edge TTS** (mặc định, chất lượng cao)
+  - **gTTS** (Google TTS, làm phương án dự phòng)
+- Giao diện web đơn giản, dễ dùng
+- Có thể triển khai local, Docker hoặc Coolify
 
-- **Streaming real-time**: Audio được phát ngay khi có dữ liệu mà không cần chờ toàn bộ file hoàn thành
-- **Chunking thông minh**: Tách văn bản thành các đoạn nhỏ, đoạn đầu tiên được xử lý nhanh nhất để phát sớm
-- **Hai engine TTS**:
-  - **Edge-TTS**: Chất lượng cao, giọng nói tự nhiên (Tiếng Việt)
-  - **Google TTS (gTTS)**: Miễn phí, không cần API key
-- **Cache thông minh**: Audio đã generate được lưu cache, không cần tạo lại
-- **Hai chế độ phát**:
-  - **MediaSource API**: Phát liên tục không gián đoạn (ưu tiên)
-  - **Fallback**: Polling và reload khi MediaSource không được hỗ trợ
+---
 
-## Cài đặt
+## 1) Cấu trúc project đề xuất
 
-### Yêu cầu
+Cấu trúc hiện tại của bạn **về cơ bản là ổn**. Nên giữ theo dạng sau:
 
-- Python 3.10+
-- uv (recommended) hoặc pip
+```text
+story2audio/
+├─ audio_cache/                # Cache MP3 và metadata JSON (nên mount volume khi deploy)
+├─ static/
+│  └─ favicon.svg
+├─ templates/
+│  └─ index.html
+├─ .env
+├─ .env.example
+├─ .gitignore
+├─ .python-version            # nếu dùng uv/pyenv/asdf
+├─ Dockerfile                 # dùng khi deploy bằng Docker / Coolify
+├─ docker-compose.yml         # dùng cho local / Coolify stack
+├─ main.py
+├─ pyproject.toml
+├─ README.md
+└─ uv.lock                    # nếu dùng uv để lock dependency
+```
 
-### Cài đặt dependencies
+### Nên giữ
+- `main.py`: entrypoint chính của FastAPI
+- `templates/index.html`: giao diện web
+- `static/favicon.svg`: favicon
+- `audio_cache/`: thư mục cache, **nên mount persistent volume** khi chạy production
+- `.env`: cấu hình môi trường
+- `pyproject.toml`: quản lý dependency
+- `uv.lock`: khóa phiên bản dependency nếu dùng `uv`
+
+### Không nên commit lên git
+- `__pycache__/`
+- `.venv/`
+- file cache thật trong `audio_cache/` (trừ khi cố ý demo)
+
+### Khuyến nghị `.gitignore`
+Nếu chưa có đầy đủ, nên thêm:
+
+```gitignore
+__pycache__/
+*.pyc
+.venv/
+.env
+audio_cache/*.mp3
+audio_cache/*.json
+```
+
+> Nếu muốn giữ thư mục `audio_cache/` trong repo nhưng không giữ file bên trong, có thể thêm file rỗng `audio_cache/.gitkeep`.
+
+---
+
+## 2) Có cần cập nhật `pyproject.toml` không?
+
+**Có, nên cập nhật.**
+
+Lý do:
+1. Một số dependency hiện tại trong ảnh của bạn **không còn dùng** trong code mới:
+   - `aiofiles`
+   - `jinja2`
+   - `pydub`
+2. Nên mô tả project rõ hơn (`description`, `readme`)
+3. Nên thêm `build-system` để file `pyproject.toml` hoàn chỉnh hơn
+4. Nếu bạn dùng `uv`, sau khi chỉnh `pyproject.toml` nên chạy lại:
 
 ```bash
-# Sử dụng uv (khuyến nghị)
+uv lock
+```
+
+### Nội dung `pyproject.toml` đề xuất
+
+```toml
+[project]
+name = "story2audio"
+version = "0.1.0"
+description = "Ứng dụng FastAPI chuyển văn bản tiếng Việt thành audio MP3 với streaming và cache"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "edge-tts>=7.2.8",
+  "fastapi>=0.115.0",
+  "gtts>=2.5.4",
+  "python-dotenv>=1.1.0",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+```
+
+### Ghi chú
+- Nếu bạn **thật sự không đóng gói app như một package**, `build-system` không bắt buộc 100%, nhưng **nên có**.
+- Nếu deploy Docker và cài dependency trực tiếp bằng `uv sync` hoặc `pip`, project vẫn chạy tốt.
+
+---
+
+## 3) Biến môi trường (`.env`)
+
+File `.env` tối thiểu:
+
+```env
+PROXY=
+```
+
+### Ý nghĩa
+- `PROXY`: proxy HTTP/HTTPS nếu môi trường mạng nội bộ cần đi qua proxy
+- Nếu không dùng proxy thì để trống
+
+### Ví dụ có proxy
+```env
+PROXY=http://user:password@proxy-host:8080
+```
+
+> Lưu ý: nếu dùng proxy chứa ký tự đặc biệt trong username/password, nên URL-encode trước.
+
+---
+
+## 4) Chạy local không dùng Docker
+
+### Cách 1: dùng `uv`
+
+Cài dependency:
+
+```bash
 uv sync
-
-# Hoặc sử dụng pip
-pip install -r pyproject.toml
 ```
 
-### Cấu hình (tùy chọn)
-
-Copy file `.env.example` thành `.env` và cấu hình proxy nếu cần:
+Chạy app:
 
 ```bash
-cp .env.example .env
+uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Chỉnh sửa `.env`:
-```
-PROXY=http://your-proxy-address:port
-```
+### Cách 2: dùng `pip`
 
-## Chạy ứng dụng
+Tạo virtual env và cài:
 
 ```bash
-python main.py
+python -m venv .venv
+source .venv/bin/activate   # Linux/macOS
+# hoặc .venv\Scripts\activate trên Windows
+
+pip install -U pip
+pip install fastapi edge-tts gtts python-dotenv "uvicorn[standard]"
 ```
 
-Server sẽ chạy tại: `http://localhost:8000`
+Chạy app:
 
-## API Endpoints
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
 
-### `POST /tts/start`
+### Truy cập
 
-Bắt đầu generate audio từ văn bản.
+Mở trình duyệt tại:
 
-**Request Body:**
+```text
+http://localhost:8000
+```
+
+---
+
+## 5) Cách ứng dụng hoạt động
+
+### Luồng xử lý chính
+1. Người dùng nhập văn bản tại giao diện web
+2. Frontend gọi `POST /tts/start`
+3. Backend:
+   - tính `cache_id`
+   - kiểm tra cache hợp lệ
+   - nếu chưa có cache thì bắt đầu generate theo chunk
+4. Frontend polling `GET /tts/status/{cache_id}` để cập nhật tiến độ
+5. Nếu trình duyệt hỗ trợ `MediaSource`, frontend phát live qua:
+   - `GET /tts/stream/{cache_id}`
+6. Khi file hoàn tất, frontend có thể phát từ cache ổn định qua:
+   - `GET /tts/file/{cache_id}`
+
+### Endpoint chính
+
+#### `GET /`
+Trả về giao diện web.
+
+#### `POST /tts/start`
+Khởi động quá trình tạo audio.
+
+**Body mẫu**
 ```json
 {
-  "text": "Nội dung truyện...",
-  "voice": "vi-VN-HoaiMyNeural",  // Chỉ dùng với edge-tts
-  "engine": "edge"  // hoặc "gtts"
+  "text": "Xin chào, đây là một câu chuyện ngắn.",
+  "engine": "edge",
+  "voice": "vi-VN-HoaiMyNeural"
 }
 ```
 
-**Response:**
+**Lưu ý**
+- Với `gtts`, trường `voice` không cần thiết
+- `engine` hỗ trợ: `edge`, `gtts`
+
+#### `GET /tts/status/{cache_id}`
+Kiểm tra trạng thái tạo audio.
+
+Ví dụ response:
+
 ```json
 {
-  "cache_id": "abc123...",
-  "status": "started"  // hoặc "completed" nếu có trong cache
-}
-```
-
-### `GET /tts/status/{cache_id}`
-
-Lấy trạng thái generation.
-
-**Response:**
-```json
-{
-  "status": "processing",  // hoặc "completed", "failed"
+  "status": "processing",
   "progress": 2,
   "total": 5,
-  "file_size": 123456
+  "file_size": 183420
 }
 ```
 
-### `GET /tts/file/{cache_id}`
+#### `GET /tts/stream/{cache_id}`
+Streaming audio khi file vẫn đang được tạo.
 
-Download file audio (hỗ trợ Range header cho streaming).
+#### `GET /tts/file/{cache_id}`
+Trả về file MP3 **chỉ khi cache đã hoàn chỉnh và hợp lệ**.
 
-### `GET /tts/stream/{cache_id}`
+---
 
-Stream audio real-time sử dụng chunked transfer encoding.
+## 6) Tại sao bản code mới ổn định hơn?
 
-## Cấu trúc project
+Bản đã chỉnh sửa khắc phục các vấn đề thường gặp:
 
+- Không còn dùng **HTTP Range giả** cho file đang tăng dần kích thước
+- Không còn nhầm lẫn giữa:
+  - **backend generate xong**
+  - **frontend tải đủ dữ liệu**
+  - **audio phát xong**
+- `/tts/file/{cache_id}` chỉ phục vụ file cache **hoàn chỉnh**
+- Dọn dẹp cache lỗi / file dở dang khi generate thất bại
+- Tránh báo **“Hoàn thành” quá sớm** trên frontend
+
+---
+
+## 7) Docker
+
+### Build image
+
+```bash
+docker build -t story2audio:latest .
 ```
-story2audio/
-├── main.py              # Backend FastAPI
-├── templates/
-│   └── index.html       # Frontend UI
-├── static/
-│   └── favicon.svg      # Favicon
-├── audio_cache/         # Thư mục cache audio (tự tạo)
-├── .env.example         # Template cấu hình
-├── pyproject.toml       # Dependencies
-└── README.md           # File này
+
+### Chạy container
+
+```bash
+docker run -d \
+  --name story2audio \
+  -p 8000:8000 \
+  --env-file .env \
+  -v story2audio_cache:/app/audio_cache \
+  story2audio:latest
 ```
 
-## Cách hoạt động
+---
 
-### Backend
+## 8) Docker Compose / Coolify
 
-1. **Text Chunking**: Văn bản được chia thành các đoạn nhỏ, đoạn đầu tiên chỉ có 1 câu để phát nhanh nhất có thể.
+Repo này có sẵn file `docker-compose.yml` để triển khai.
 
-2. **Background Generation**: Các chunk được generate tuần tự trong background task. Mỗi chunk được append vào file audio ngay khi hoàn thành.
+### Chạy local bằng Docker Compose
 
-3. **Streaming**: Frontend có thể stream audio qua `/tts/stream/{cache_id}` hoặc download qua `/tts/file/{cache_id}` với Range header.
+```bash
+docker compose up -d --build
+```
 
-4. **Cache**: Audio hoàn thành được lưu vào `audio_cache/` với metadata JSON để xác nhận tính hợp lệ.
+### Với Coolify
 
-### Frontend
+#### Cách triển khai khuyến nghị
+1. Push source code lên Git repository
+2. Trong Coolify, tạo **Docker Compose Resource**
+3. Trỏ tới repo chứa project này
+4. Chọn file `docker-compose.yml`
+5. Khai báo biến môi trường nếu cần (`PROXY`)
+6. Thiết lập **Port = 8000** nếu Coolify yêu cầu
+7. Deploy
 
-1. **MSE Mode** (MediaSource API): Ưu tiên sử dụng, cho phép phát liên tục không gián đoạn. Stream dữ liệu từ `/tts/stream/` và append vào SourceBuffer.
+### Vì sao cần volume cho `audio_cache`
+Nếu không mount volume persistent:
+- mỗi lần redeploy / recreate container sẽ mất cache audio
 
-2. **Fallback Mode**: Nếu trình duyệt không hỗ trợ MediaSource, sử dụng polling để kiểm tra file size và reload src định kỳ.
+Vì vậy `docker-compose.yml` đã có:
+- volume named cho `/app/audio_cache`
 
-3. **Xử lý khi phát hết đoạn**: Nếu audio phát hết mà generation còn đang xử lý, frontend tự động fetch thêm dữ liệu để tiếp tục phát.
+---
 
-## Giọng đọc (Edge-TTS)
+## 9) Healthcheck
 
-| Giọng | Mã |
-|------|-----|
-| Hoài Mỹ (Nữ) | vi-VN-HoaiMyNeural |
-| Nam Minh (Nam) | vi-VN-NamMinhNeural |
+Container có healthcheck để Coolify/Docker biết ứng dụng đang sống.
 
-## Tốc độ phát
+Endpoint kiểm tra là:
 
-Có thể điều chỉnh tốc độ phát: 0.75x, 1x, 1.25x, 1.5x, 2x
+```text
+GET /
+```
 
-## Khắc phục sự cố
+Nếu cần chuẩn production hơn, bạn có thể thêm endpoint riêng như `/healthz` trong `main.py`.
 
-### Lỗi kết nối TTS
+Ví dụ:
 
-- Kiểm tra kết nối internet
-- Thử cấu hình proxy trong `.env`
-- Với gTTS: Có thể thử lại sau
+```python
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+```
 
-### Audio bị gián đoạn
+Sau đó đổi lại `healthcheck` trong compose cho sạch hơn.
 
-- Kiểm tra tốc độ mạng
-- Đợi generation hoàn thành
+---
 
-### Trình duyệt không hỗ trợ MediaSource
+## 10) Cập nhật dependency sau khi sửa `pyproject.toml`
 
-- Sử dụng trình duyệt hiện đại (Chrome, Firefox, Edge)
-- Ứng dụng会自动 fallback sang chế độ polling
+Nếu bạn đang dùng `uv`, hãy chạy lại:
+
+```bash
+uv lock
+uv sync
+```
+
+Nếu dùng Docker với `uv sync`, nên commit cả:
+- `pyproject.toml`
+- `uv.lock`
+
+để môi trường build nhất quán hơn.
+
+---
+
+## 11) Checklist trước khi deploy production
+
+- [ ] `main.py` đã là bản mới
+- [ ] `templates/index.html` đã là bản mới
+- [ ] `pyproject.toml` đã dọn dependency thừa
+- [ ] `uv.lock` đã update lại (nếu dùng `uv`)
+- [ ] Có `.env` hợp lệ
+- [ ] `audio_cache/` dùng persistent volume
+- [ ] Đã cấu hình domain / reverse proxy trên Coolify nếu cần
+- [ ] Đã kiểm tra quyền ghi thư mục `/app/audio_cache`
+
+---
+
+## 12) Troubleshooting
+
+### 1. Trình duyệt không phát live được
+Nguyên nhân có thể:
+- trình duyệt không hỗ trợ `MediaSource` cho `audio/mpeg`
+- mạng chậm
+- stream bị proxy trung gian buffer
+
+Cách xử lý:
+- kiểm tra console browser
+- nếu cần, app sẽ tự fallback sang chế độ phát sau khi file hoàn tất
+
+### 2. gTTS lỗi mạng / timeout
+- kiểm tra internet outbound
+- kiểm tra proxy trong `.env`
+- thử lại bằng engine `edge`
+
+### 3. Redeploy xong mất cache
+- kiểm tra volume `audio_cache`
+- chắc chắn `docker-compose.yml` có mount volume persistent
+
+### 4. Coolify deploy thành công nhưng không vào được web
+- kiểm tra service port là `8000`
+- kiểm tra container log
+- kiểm tra domain / ingress / reverse proxy trong Coolify
+
+---
+
+## 13) Gợi ý cải tiến tiếp theo
+
+Nếu muốn nâng cấp thêm, bạn có thể làm tiếp:
+
+- Thêm nút **Download MP3**
+- Thêm endpoint **xóa cache cũ**
+- Thêm cơ chế **TTL cho cache**
+- Thêm **/healthz** riêng cho healthcheck
+- Thêm nhiều giọng đọc hơn
+- Thêm tùy chọn tốc độ nói thực sự ở backend (không chỉ playback speed ở frontend)
+- Giới hạn độ dài text tối đa để bảo vệ tài nguyên server
+
+---
+
+## 14) Giấy phép / ghi chú
+
+Bạn có thể tự bổ sung phần license theo nhu cầu nội bộ hoặc public repo.
+
+Nếu đây là project dùng nội bộ trong công ty, nên ghi chú thêm:
+- môi trường proxy
+- policy lưu cache audio
+- giới hạn nội dung đầu vào
+
+---
+
+## 15) Tóm tắt khuyến nghị cho project hiện tại
+
+### Cấu trúc project
+**Ổn**, chỉ cần lưu ý không commit `.venv`, `__pycache__`, cache audio thật.
+
+### `pyproject.toml`
+**Nên cập nhật** để bỏ dependency thừa và mô tả project rõ ràng hơn.
+
+### README
+Đã viết lại đầy đủ trong file này.
+
+### Docker Compose cho Coolify
+Đã chuẩn bị sẵn file `docker-compose.yml` và `Dockerfile` để triển khai.
+
+Chúc bạn triển khai thuận lợi 🚀

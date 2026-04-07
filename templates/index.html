@@ -1,15 +1,15 @@
 <!DOCTYPE html>
 <html lang="vi">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chuyển đổi Truyện thành Audio</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.ico">
+    <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
     <style>
         * { box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 820px;
+            max-width: 860px;
             margin: 30px auto;
             padding: 0 20px;
             background: #f0f4f8;
@@ -18,7 +18,7 @@
         h1 { color: #2c3e50; text-align: center; margin-bottom: 24px; }
         textarea {
             width: 100%;
-            height: 200px;
+            height: 220px;
             padding: 14px;
             border: 1px solid #cbd5e0;
             border-radius: 8px;
@@ -55,7 +55,11 @@
             background: #fff;
             cursor: pointer;
         }
-        select:focus { outline: none; border-color: #3182ce; box-shadow: 0 0 0 2px rgba(49,130,206,0.2); }
+        select:focus {
+            outline: none;
+            border-color: #3182ce;
+            box-shadow: 0 0 0 2px rgba(49,130,206,0.2);
+        }
         button {
             padding: 10px 20px;
             border-radius: 6px;
@@ -70,7 +74,7 @@
         }
         button:hover { background: #2b6cb0; }
         button:disabled { background: #a0aec0; cursor: not-allowed; }
-        .progress-container {
+        .card {
             display: none;
             background: #fff;
             padding: 16px 20px;
@@ -95,17 +99,9 @@
             transition: width 0.4s ease;
         }
         #progText { text-align: right; color: #718096; font-size: 0.82em; margin-top: 4px; }
-        #playerContainer {
-            display: none;
-            background: #fff;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-            margin-top: 16px;
-        }
         #playerContainer h3 { margin: 0 0 12px; color: #2c3e50; }
         audio { width: 100%; }
-        .info { color: #718096; font-size: 0.85em; margin-top: 10px; }
+        .info { color: #718096; font-size: 0.9em; margin-top: 10px; }
         .badge {
             display: inline-block;
             padding: 2px 8px;
@@ -115,10 +111,11 @@
             margin-left: 8px;
             vertical-align: middle;
         }
-        .badge-live   { background: #fed7d7; color: #c53030; }
-        .badge-done   { background: #c6f6d5; color: #276749; }
+        .badge-live { background: #fed7d7; color: #c53030; }
+        .badge-done { background: #c6f6d5; color: #276749; }
         .badge-cached { background: #bee3f8; color: #2b6cb0; }
-        .badge-error  { background: #feebc8; color: #c05621; }
+        .badge-error { background: #feebc8; color: #c05621; }
+        .badge-wait { background: #faf089; color: #975a16; }
     </style>
 </head>
 <body>
@@ -134,6 +131,7 @@
                 <option value="gtts">Google TTS</option>
             </select>
         </div>
+
         <div class="ctrl-group" id="voiceGroup">
             <label for="voice">Giọng đọc</label>
             <select id="voice">
@@ -141,6 +139,7 @@
                 <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
             </select>
         </div>
+
         <div class="ctrl-group">
             <label for="speedSelect">Tốc độ</label>
             <select id="speedSelect">
@@ -151,531 +150,453 @@
                 <option value="2">2x</option>
             </select>
         </div>
-        <button id="convertBtn">&#9654; Chuyển sang Audio</button>
+
+        <button id="convertBtn">▶ Chuyển sang Audio</button>
     </div>
 
-    <div class="progress-container" id="progContainer">
+    <div class="card" id="progContainer">
         <div class="status-text" id="statusLabel">Đang khởi tạo...</div>
         <div class="progress-bar"><div class="progress-fill" id="progFill"></div></div>
         <p id="progText">0 / 0 đoạn</p>
     </div>
 
-    <div id="playerContainer">
+    <div class="card" id="playerContainer">
         <h3 id="playerTitle">Trình phát Audio</h3>
-        <audio id="audioPlayer" controls></audio>
+        <audio id="audioPlayer" controls preload="metadata"></audio>
         <p class="info" id="fileSizeInfo"></p>
     </div>
 
     <script>
-    // ============================================================
-    // State
-    // ============================================================
-    let pollingInterval = null;
-    let currentCacheId  = null;
-    let mediaSource     = null;
-    let sourceBuffer    = null;
-    let streamReader    = null;
+        // ============================================================
+        // State
+        // ============================================================
+        let pollingInterval = null;
+        let currentCacheId = null;
+        let currentMode = null; // 'mse' | 'fallback' | 'cached'
 
-    // Fallback state
-    let lastFileSize = 0;
-    let playerShown  = false;
-    let isReloading  = false;
+        let mediaSource = null;
+        let sourceBuffer = null;
+        let streamReader = null;
+        let bytesReceived = 0;
+        let streamFinished = false;
+        let lastStatus = null;
 
-    const player       = document.getElementById('audioPlayer');
-    const btn          = document.getElementById('convertBtn');
-    const progFill     = document.getElementById('progFill');
-    const progText     = document.getElementById('progText');
-    const statusLbl    = document.getElementById('statusLabel');
-    const fileSizeInfo = document.getElementById('fileSizeInfo');
-    const playerTitle  = document.getElementById('playerTitle');
-    const playerBox    = document.getElementById('playerContainer');
-    const progBox      = document.getElementById('progContainer');
-    const speedSelect  = document.getElementById('speedSelect');
-    const engineSel    = document.getElementById('engine');
-    const voiceGroup   = document.getElementById('voiceGroup');
+        const player = document.getElementById('audioPlayer');
+        const btn = document.getElementById('convertBtn');
+        const progFill = document.getElementById('progFill');
+        const progText = document.getElementById('progText');
+        const statusLbl = document.getElementById('statusLabel');
+        const fileSizeInfo = document.getElementById('fileSizeInfo');
+        const playerTitle = document.getElementById('playerTitle');
+        const playerBox = document.getElementById('playerContainer');
+        const progBox = document.getElementById('progContainer');
+        const speedSelect = document.getElementById('speedSelect');
+        const engineSel = document.getElementById('engine');
+        const voiceGroup = document.getElementById('voiceGroup');
+        const voiceSel = document.getElementById('voice');
 
-    // Hide voice selector when Google TTS is selected (no voice choice)
-    function updateVoiceVisibility() {
-        voiceGroup.style.display = engineSel.value === 'gtts' ? 'none' : '';
-    }
-    engineSel.addEventListener('change', updateVoiceVisibility);
-    updateVoiceVisibility();
+        const MSE_SUPPORTED = (
+            typeof MediaSource !== 'undefined' &&
+            MediaSource.isTypeSupported('audio/mpeg')
+        );
+        console.log('[TTS] MediaSource audio/mpeg supported:', MSE_SUPPORTED);
 
-    // Helper: get current playback rate
-    function getRate() { return parseFloat(speedSelect.value); }
-
-    // Apply playback rate whenever selector changes
-    speedSelect.addEventListener('change', () => {
-        player.playbackRate = getRate();
-    });
-    // Re-apply on play event (some browsers reset rate on src change)
-    player.addEventListener('play', () => {
-        player.playbackRate = getRate();
-    });
-    // Re-apply on ratechange to ensure it sticks
-    player.addEventListener('ratechange', () => {
-        // Only log, don't force - let user control via selector
-        console.log('[TTS] Playback rate changed to:', player.playbackRate);
-    });
-    // Re-apply on canplay event (after enough data is buffered)
-    player.addEventListener('canplay', () => {
-        player.playbackRate = getRate();
-    });
-
-    // Check MediaSource support for audio/mpeg
-    const MSE_SUPPORTED = (
-        typeof MediaSource !== 'undefined' &&
-        MediaSource.isTypeSupported('audio/mpeg')
-    );
-    console.log('[TTS] MSE supported:', MSE_SUPPORTED);
-
-    // ============================================================
-    // Main handler
-    // ============================================================
-    btn.onclick = async function () {
-        const text   = document.getElementById('textInput').value;
-        const engine = document.getElementById('engine').value;
-        const voice  = document.getElementById('voice').value;
-
-        if (!text.trim()) { alert('Vui lòng nhập văn bản!'); return; }
-
-        resetUI();
-        btn.disabled = true;
-
-        // gTTS doesn't need voice parameter
-        const requestBody = { text, engine };
-        if (engine === 'edge') {
-            requestBody.voice = voice;
+        // ============================================================
+        // Helpers
+        // ============================================================
+        function getRate() {
+            return parseFloat(speedSelect.value || '1');
         }
 
-        let data;
-        try {
-            const res = await fetch('/tts/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody),
-            });
-            data = await res.json();
-        } catch (e) {
-            statusLbl.textContent = 'Lỗi kết nối!';
-            btn.disabled = false;
-            return;
+        function formatBytes(bytes) {
+            if (!bytes || bytes < 0) return '0 KB';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1024 / 1024).toFixed(2) + ' MB';
         }
 
-        currentCacheId = data.cache_id;
+        function updateVoiceVisibility() {
+            voiceGroup.style.display = engineSel.value === 'gtts' ? 'none' : '';
+        }
 
-        if (data.status === 'completed') {
-            updateProgress(1, 1);
-            statusLbl.textContent = 'Hoàn thành (từ bộ nhớ tạm)!';
-            showBadge('cached');
-            playDirect(currentCacheId);
-            btn.disabled = false;
-        } else {
-            showBadge('live');
-            if (MSE_SUPPORTED) {
-                startMSEMode(currentCacheId);
-            } else {
-                startFallbackMode(currentCacheId);
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function updateProgress(current, total) {
+            const pct = total > 0 ? (current / total) * 100 : 0;
+            progFill.style.width = pct + '%';
+            progText.textContent = `${current || 0} / ${total || 0} đoạn`;
+        }
+
+        function setStatus(text) {
+            statusLbl.textContent = text;
+        }
+
+        function showBadge(type) {
+            const old = playerTitle.querySelector('.badge');
+            if (old) old.remove();
+            const badge = document.createElement('span');
+            badge.className = 'badge badge-' + type;
+            badge.textContent = {
+                live: '● LIVE',
+                done: '✓ Hoàn thành',
+                cached: '★ Cache',
+                error: '⚠ Lỗi',
+                wait: '… Đang chờ'
+            }[type] || type;
+            playerTitle.appendChild(badge);
+        }
+
+        function clearBadge() {
+            const old = playerTitle.querySelector('.badge');
+            if (old) old.remove();
+        }
+
+        function applyPlaybackRate() {
+            player.playbackRate = getRate();
+        }
+
+        function cleanupMSE() {
+            if (streamReader) {
+                try { streamReader.cancel(); } catch (_) {}
+                streamReader = null;
             }
-        }
-    };
-
-    // ============================================================
-    // Method 1: MediaSource API - seamless streaming
-    // ============================================================
-    function startMSEMode(cacheId) {
-        startPolling(cacheId, false);
-
-        mediaSource = new MediaSource();
-        player.src  = URL.createObjectURL(mediaSource);
-        playerBox.style.display = 'block';
-
-        mediaSource.addEventListener('sourceopen', async () => {
-            try {
-                sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
-                sourceBuffer.mode = 'sequence';
-                await pumpStream(cacheId);
-            } catch (e) {
-                console.warn('[MSE] Error, falling back:', e);
-                cleanupMSE();
-                startFallbackMode(cacheId);
-            }
-        }, { once: true });
-        
-        // Also listen for "ended" event in case stream ends early while generation is still ongoing
-        player.addEventListener('ended', () => {
-            if (currentCacheId && mediaSource && mediaSource.readyState === 'open') {
-                checkAndFetchMoreDataMSE(cacheId);
-            }
-        });
-    }
-    
-    async function checkAndFetchMoreDataMSE(cacheId) {
-        try {
-            // Get the current buffered amount from sourceBuffer
-            let sentBytes = 0;
-            if (sourceBuffer && sourceBuffer.buffered.length > 0) {
-                // Get the end of the buffered range
-                sentBytes = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
-            }
-            
-            const st = await fetch('/tts/status/' + cacheId);
-            const stData = await st.json();
-            
-            if (stData.status === 'processing' || (stData.status === 'completed' && stData.file_size > sentBytes)) {
-                // Generation still ongoing or there's more data - try to fetch more
-                console.log('[MSE] Playback ended but more data available, fetching more...');
-                
-                if (sourceBuffer && sourceBuffer.updating) {
-                    await waitUpdateEnd(sourceBuffer);
-                }
-                
-                if (!mediaSource || mediaSource.readyState !== 'open') return;
-                
-                // Fetch remaining data
-                const fileRes = await fetch('/tts/file/' + cacheId, {
-                    headers: { 'Range': `bytes=${sentBytes}-` }
-                });
-                
-                if (fileRes.ok || fileRes.status === 206) {
-                    const remainingData = await fileRes.arrayBuffer();
-                    if (remainingData.byteLength > 0) {
-                        if (sourceBuffer && sourceBuffer.updating) await waitUpdateEnd(sourceBuffer);
-                        try {
-                            sourceBuffer.appendBuffer(new Uint8Array(remainingData));
-                            await waitUpdateEnd(sourceBuffer);
-                            console.log('[MSE] Appended more data:', remainingData.byteLength, 'bytes');
-                        } catch (e) {
-                            console.warn('[MSE] Failed to append more data:', e);
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            console.warn('[MSE] Error checking for more data:', e);
-        }
-    }
-
-    function cleanupMSE() {
-        if (streamReader) { try { streamReader.cancel(); } catch(e) {} streamReader = null; }
-        if (mediaSource && mediaSource.readyState === 'open') {
-            try { mediaSource.endOfStream(); } catch(e) {}
-        }
-        if (player.src && player.src.startsWith('blob:')) {
-            URL.revokeObjectURL(player.src);
-        }
-        mediaSource  = null;
-        sourceBuffer = null;
-    }
-
-    async function pumpStream(cacheId) {
-        // Poll status + stream endpoint, bail early on failure
-        let response = null;
-        for (let attempt = 0; attempt < 24; attempt++) {
-            // Check generation status first
-            try {
-                const st = await fetch('/tts/status/' + cacheId);
-                const stData = await st.json();
-                if (stData.status === 'failed') {
-                    statusLbl.textContent = 'Lỗi tạo audio: ' + (stData.error || 'unknown');
-                    showBadge('error');
-                    btn.disabled = false;
-                    return;
-                }
-            } catch(e) {}
-
-            // Try stream endpoint
-            try {
-                const r = await fetch('/tts/stream/' + cacheId);
-                if (r.ok) { response = r; break; }
-                if (r.status === 503) {
-                    const body = await r.json().catch(() => ({}));
-                    statusLbl.textContent = 'Lỗi: ' + (body.detail || 'Không thể tạo audio');
-                    showBadge('error');
-                    btn.disabled = false;
-                    return;
-                }
-            } catch (e) {}
-            await sleep(500);
-        }
-
-        if (!response) {
-            console.warn('[MSE] Stream unavailable, falling back to polling mode');
-            cleanupMSE();
-            startFallbackMode(cacheId);
-            return;
-        }
-
-        streamReader = response.body.getReader();
-        let firstChunk = true;
-        let totalBytes = 0;
-
-        // Read stream data
-        while (true) {
-            let result;
-            try { result = await streamReader.read(); }
-            catch (e) { console.warn('[MSE] Read error:', e); break; }
-            if (result.done) break;
-
-            const chunk = result.value;
-            totalBytes += chunk.byteLength;
-
             if (sourceBuffer && sourceBuffer.updating) {
-                await waitUpdateEnd(sourceBuffer);
+                // nothing else to do here
             }
-            if (!mediaSource || mediaSource.readyState !== 'open') break;
-
-            try { sourceBuffer.appendBuffer(chunk); }
-            catch (e) { console.warn('[MSE] appendBuffer error:', e); break; }
-
-            if (firstChunk) {
-                firstChunk = false;
-                player.playbackRate = getRate();
-                player.play().catch(() => {});
+            if (mediaSource && mediaSource.readyState === 'open') {
+                try { mediaSource.endOfStream(); } catch (_) {}
             }
-
-            fileSizeInfo.textContent =
-                'Dữ liệu đã nhận: ' + (totalBytes / 1024).toFixed(1) + ' KB';
+            if (player.src && player.src.startsWith('blob:')) {
+                try { URL.revokeObjectURL(player.src); } catch (_) {}
+            }
+            mediaSource = null;
+            sourceBuffer = null;
         }
 
-        // Wait for sourceBuffer to finish processing
-        if (sourceBuffer && sourceBuffer.updating) await waitUpdateEnd(sourceBuffer);
-        
-        // Wait for generation to complete (with timeout)
-        let finalStatus = null;
-        for (let i = 0; i < 120; i++) {  // 60 seconds max
-            try {
-                const st = await fetch('/tts/status/' + cacheId);
-                finalStatus = await st.json();
-                if (finalStatus.status === 'completed' || finalStatus.status === 'failed') break;
-            } catch(e) {}
-            await sleep(500);
+        function resetUI() {
+            cleanupMSE();
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+            currentCacheId = null;
+            currentMode = null;
+            bytesReceived = 0;
+            streamFinished = false;
+            lastStatus = null;
+
+            player.pause();
+            player.removeAttribute('src');
+            player.load();
+
+            progBox.style.display = 'block';
+            playerBox.style.display = 'none';
+            progFill.style.width = '0%';
+            progText.textContent = '0 / 0 đoạn';
+            fileSizeInfo.textContent = '';
+            setStatus('Đang gửi yêu cầu...');
+            clearBadge();
         }
-        
-        // If generation completed, fetch any remaining data
-        if (finalStatus && finalStatus.status === 'completed') {
-            const expectedSize = finalStatus.file_size || 0;
-            if (expectedSize > totalBytes && mediaSource && mediaSource.readyState === 'open') {
-                // Fetch remaining bytes
+
+        function waitSourceBufferIdle(sb) {
+            if (!sb || !sb.updating) return Promise.resolve();
+            return new Promise(resolve => {
+                sb.addEventListener('updateend', resolve, { once: true });
+            });
+        }
+
+        async function appendChunkToSourceBuffer(sb, chunk) {
+            await waitSourceBufferIdle(sb);
+            return new Promise((resolve, reject) => {
+                const onUpdateEnd = () => {
+                    cleanup();
+                    resolve();
+                };
+                const onError = (e) => {
+                    cleanup();
+                    reject(e);
+                };
+                const cleanup = () => {
+                    sb.removeEventListener('updateend', onUpdateEnd);
+                    sb.removeEventListener('error', onError);
+                };
+                sb.addEventListener('updateend', onUpdateEnd, { once: true });
+                sb.addEventListener('error', onError, { once: true });
                 try {
-                    const fileRes = await fetch('/tts/file/' + cacheId, {
-                        headers: { 'Range': `bytes=${totalBytes}-` }
-                    });
-                    if (fileRes.ok || fileRes.status === 206) {
-                        const remainingData = await fileRes.arrayBuffer();
-                        if (remainingData.byteLength > 0) {
-                            if (sourceBuffer && sourceBuffer.updating) await waitUpdateEnd(sourceBuffer);
-                            try {
-                                sourceBuffer.appendBuffer(new Uint8Array(remainingData));
-                                await waitUpdateEnd(sourceBuffer);
-                                totalBytes += remainingData.byteLength;
-                            } catch (e) {
-                                console.warn('[MSE] Failed to append remaining data:', e);
+                    sb.appendBuffer(chunk);
+                } catch (e) {
+                    cleanup();
+                    reject(e);
+                }
+            });
+        }
+
+        // ============================================================
+        // Core flow
+        // ============================================================
+        engineSel.addEventListener('change', updateVoiceVisibility);
+        updateVoiceVisibility();
+
+        speedSelect.addEventListener('change', applyPlaybackRate);
+        player.addEventListener('play', applyPlaybackRate);
+        player.addEventListener('canplay', applyPlaybackRate);
+
+        btn.onclick = async function () {
+            const text = document.getElementById('textInput').value.trim();
+            const engine = engineSel.value;
+            const voice = voiceSel.value;
+
+            if (!text) {
+                alert('Vui lòng nhập văn bản!');
+                return;
+            }
+
+            resetUI();
+            btn.disabled = true;
+
+            const body = { text, engine };
+            if (engine === 'edge') body.voice = voice;
+
+            let data;
+            try {
+                const res = await fetch('/tts/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.detail || 'Không thể bắt đầu tạo audio');
+                }
+            } catch (e) {
+                setStatus('Lỗi kết nối: ' + (e.message || e));
+                showBadge('error');
+                btn.disabled = false;
+                return;
+            }
+
+            currentCacheId = data.cache_id;
+
+            if (data.status === 'completed') {
+                currentMode = 'cached';
+                updateProgress(1, 1);
+                setStatus('Đã tìm thấy audio trong cache.');
+                showBadge('cached');
+                playDirect(currentCacheId);
+                btn.disabled = false;
+                return;
+            }
+
+            if (MSE_SUPPORTED) {
+                currentMode = 'mse';
+                showBadge('live');
+                setStatus('Đang tạo audio và phát trực tiếp...');
+                startPolling(currentCacheId, { allowDirectPlayWhenCompleted: false });
+                startMSEPlayback(currentCacheId);
+            } else {
+                currentMode = 'fallback';
+                showBadge('wait');
+                setStatus('Trình duyệt không hỗ trợ phát trực tiếp. Đang tạo audio, sẽ phát khi hoàn thành...');
+                startPolling(currentCacheId, { allowDirectPlayWhenCompleted: true });
+            }
+        };
+
+        // ============================================================
+        // Polling status
+        // ============================================================
+        function startPolling(cacheId, options = {}) {
+            const { allowDirectPlayWhenCompleted = false } = options;
+            if (pollingInterval) clearInterval(pollingInterval);
+
+            pollingInterval = setInterval(async () => {
+                try {
+                    const res = await fetch('/tts/status/' + cacheId, { cache: 'no-store' });
+                    if (!res.ok) throw new Error('Không lấy được trạng thái');
+                    const data = await res.json();
+                    lastStatus = data;
+
+                    updateProgress(data.progress || 0, data.total || 0);
+
+                    if (data.status === 'processing') {
+                        if (currentMode === 'mse') {
+                            setStatus(`Đang tạo audio đoạn ${data.progress || 0}/${data.total || 0} và phát trực tiếp...`);
+                        } else {
+                            setStatus(`Đang tạo audio đoạn ${data.progress || 0}/${data.total || 0}...`);
+                        }
+                        if (bytesReceived > 0) {
+                            fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)}`;
+                        }
+                        return;
+                    }
+
+                    if (data.status === 'failed') {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        setStatus('Lỗi tạo audio: ' + (data.error || 'unknown'));
+                        showBadge('error');
+                        btn.disabled = false;
+                        return;
+                    }
+
+                    if (data.status === 'completed') {
+                        const finalSize = data.file_size || 0;
+                        updateProgress(data.total || 1, data.total || 1);
+
+                        if (currentMode === 'mse') {
+                            if (streamFinished && bytesReceived >= finalSize) {
+                                setStatus('Hoàn thành!');
+                                showBadge('done');
+                                fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                                clearInterval(pollingInterval);
+                                pollingInterval = null;
+                                btn.disabled = false;
+                            } else {
+                                setStatus('Đã tạo xong audio, đang nạp phần cuối để phát...');
+                                showBadge('live');
+                                fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)} / ${formatBytes(finalSize)}`;
                             }
+                        } else {
+                            setStatus('Đã tạo xong audio. Đang mở trình phát...');
+                            fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                            showBadge('done');
+                            clearInterval(pollingInterval);
+                            pollingInterval = null;
+                            if (allowDirectPlayWhenCompleted) {
+                                playDirect(cacheId);
+                            }
+                            btn.disabled = false;
                         }
                     }
                 } catch (e) {
-                    console.warn('[MSE] Failed to fetch remaining data:', e);
+                    console.error('Polling error:', e);
+                }
+            }, 1000);
+        }
+
+        // ============================================================
+        // MediaSource live playback
+        // ============================================================
+        function startMSEPlayback(cacheId) {
+            playerBox.style.display = 'block';
+            bytesReceived = 0;
+            streamFinished = false;
+
+            mediaSource = new MediaSource();
+            player.src = URL.createObjectURL(mediaSource);
+
+            mediaSource.addEventListener('sourceopen', async () => {
+                try {
+                    if (!mediaSource || mediaSource.readyState !== 'open') return;
+                    sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                    sourceBuffer.mode = 'sequence';
+                    await pumpLiveStream(cacheId);
+                } catch (e) {
+                    console.error('[MSE] sourceopen error:', e);
+                    setStatus('Không thể phát trực tiếp. Hệ thống sẽ chờ đến khi audio hoàn thành.');
+                    showBadge('wait');
+                    cleanupMSE();
+                    currentMode = 'fallback';
+                    startPolling(cacheId, { allowDirectPlayWhenCompleted: true });
+                }
+            }, { once: true });
+        }
+
+        async function pumpLiveStream(cacheId) {
+            let response = null;
+
+            // Stream endpoint có thể chưa sẵn sàng ngay lập tức; thử vài lần
+            for (let attempt = 0; attempt < 40; attempt++) {
+                try {
+                    const res = await fetch('/tts/stream/' + cacheId, { cache: 'no-store' });
+                    if (res.ok) {
+                        response = res;
+                        break;
+                    }
+                    if (res.status === 503) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || 'Generation failed');
+                    }
+                } catch (e) {
+                    if (attempt === 39) throw e;
+                }
+                await sleep(300);
+            }
+
+            if (!response || !response.body) {
+                throw new Error('Không thể mở live stream');
+            }
+
+            streamReader = response.body.getReader();
+            let firstChunk = true;
+
+            while (true) {
+                const { done, value } = await streamReader.read();
+                if (done) break;
+                if (!value || value.byteLength === 0) continue;
+
+                bytesReceived += value.byteLength;
+                fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)}`;
+
+                if (!sourceBuffer || !mediaSource || mediaSource.readyState !== 'open') {
+                    break;
+                }
+
+                await appendChunkToSourceBuffer(sourceBuffer, value);
+
+                if (firstChunk) {
+                    firstChunk = false;
+                    playerBox.style.display = 'block';
+                    applyPlaybackRate();
+                    player.play().catch(() => {});
                 }
             }
-            fileSizeInfo.textContent = 'Kích thước file: ' + (finalStatus.file_size / 1024).toFixed(1) + ' KB';
-        }
-        
-        if (mediaSource && mediaSource.readyState === 'open') {
-            try { mediaSource.endOfStream(); } catch (e) {}
-        }
-        
-        if (finalStatus && finalStatus.status === 'failed') {
-            statusLbl.textContent = 'Lỗi tạo audio: ' + (finalStatus.error || 'unknown');
-            showBadge('error');
-        } else {
-            showBadge('done');
-        }
-        btn.disabled = false;
-    }
 
-    function waitUpdateEnd(sb) {
-        return new Promise(resolve =>
-            sb.addEventListener('updateend', resolve, { once: true })
-        );
-    }
+            streamFinished = true;
 
-    // ============================================================
-    // Method 2: Fallback - polling + reload src
-    // ============================================================
-    // Listen for player "ended" event to reload if generation is still ongoing
-    player.addEventListener('ended', () => {
-        if (currentCacheId && playerShown && !isReloading) {
-            // Check if generation is still in progress
-            fetch('/tts/status/' + currentCacheId).then(res => res.json()).then(st => {
-                if (st.status === 'processing' || (st.status === 'completed' && st.file_size > lastFileSize)) {
-                    // Still generating - reload to get more data
-                    reloadAudioKeepTime(currentCacheId);
-                }
-            }).catch(() => {});
-        }
-    });
+            if (sourceBuffer) {
+                await waitSourceBufferIdle(sourceBuffer);
+            }
+            if (mediaSource && mediaSource.readyState === 'open') {
+                try { mediaSource.endOfStream(); } catch (_) {}
+            }
 
-    function startFallbackMode(cacheId) {
-        lastFileSize = 0;
-        playerShown  = false;
-        isReloading  = false;
-        
-        startPolling(cacheId, true);
-    }
-
-    function startPolling(cacheId, withReload) {
-        if (pollingInterval) clearInterval(pollingInterval);
-
-        pollingInterval = setInterval(async () => {
-            try {
-                const res  = await fetch('/tts/status/' + cacheId);
-                const data = await res.json();
-
-                updateProgress(data.progress || 0, data.total || 0);
-
-                if (data.status === 'processing' || data.status === 'completed') {
-                    statusLbl.textContent = data.status === 'processing'
-                        ? 'Đang xử lý đoạn ' + data.progress + '/' + data.total + '...'
-                        : 'Hoàn thành!';
-
-                    if (withReload) {
-                        const fsize = data.file_size || 0;
-                        fileSizeInfo.textContent =
-                            'Kích thước file: ' + (fsize / 1024 / 1024).toFixed(2) + ' MB';
-
-                        if (!playerShown && data.progress >= 1 && fsize > 0) {
-                            playerShown  = true;
-                            lastFileSize = fsize;
-                            showPlayerFallback(cacheId, 0);
-                        } else if (playerShown && !isReloading && fsize > lastFileSize) {
-                            lastFileSize = fsize;
-                            reloadAudioKeepTime(cacheId);
-                        }
-                    }
-                }
-
-                if (data.status === 'failed') {
-                    clearInterval(pollingInterval);
-                    statusLbl.textContent = 'Lỗi tạo audio: ' + (data.error || 'unknown');
-                    showBadge('error');
-                    btn.disabled = false;
-                }
-
-                if (data.status === 'completed') {
-                    clearInterval(pollingInterval);
+            // Cập nhật UI sau khi stream xong: chỉ báo done nếu backend completed và đã nhận đủ bytes
+            const finalState = lastStatus;
+            if (finalState && finalState.status === 'completed') {
+                const finalSize = finalState.file_size || 0;
+                if (bytesReceived >= finalSize) {
+                    setStatus('Hoàn thành!');
                     showBadge('done');
-                    btn.disabled = false;
-                    if (withReload) {
-                        setTimeout(() => {
-                            if (!isReloading) reloadAudioKeepTime(cacheId);
-                        }, 800);
+                    fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                    if (pollingInterval) {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
                     }
+                } else {
+                    setStatus('Đã tạo xong audio, nhưng trình phát vẫn đang nạp phần cuối...');
+                    showBadge('live');
+                    fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)} / ${formatBytes(finalSize)}`;
                 }
-            } catch (e) {
-                console.error('Polling error:', e);
             }
-        }, 1500);
-    }
 
-    function showPlayerFallback(cacheId, startTime) {
-        playerBox.style.display = 'block';
-        setPlayerSrc(cacheId, (p) => {
-            if (startTime > 0) p.currentTime = startTime;
-            p.play().catch(() => {});
-        });
-    }
+            btn.disabled = false;
+        }
 
-    function reloadAudioKeepTime(cacheId) {
-        const savedTime  = player.currentTime;
-        const wasPlaying = !player.paused;
-        setPlayerSrc(cacheId, (p) => {
-            p.currentTime = savedTime;
-            if (wasPlaying) p.play().catch(() => {});
-        });
-    }
-
-    function setPlayerSrc(cacheId, onReady) {
-        isReloading = true;
-        player.src  = '/tts/file/' + cacheId + '?t=' + Date.now();
-        const onCanPlay = () => {
-            player.removeEventListener('canplay', onCanPlay);
-            player.removeEventListener('error', onErr);
-            isReloading = false;
-            onReady(player);
-        };
-        const onErr = () => {
-            player.removeEventListener('canplay', onCanPlay);
-            player.removeEventListener('error', onErr);
-            isReloading = false;
-        };
-        player.addEventListener('canplay', onCanPlay);
-        player.addEventListener('error', onErr);
-    }
-
-    // ============================================================
-    // Play directly from cache
-    // ============================================================
-    function playDirect(cacheId) {
-        playerBox.style.display = 'block';
-        player.src = '/tts/file/' + cacheId;
-        player.addEventListener('canplay', function onCan() {
-            player.removeEventListener('canplay', onCan);
-            player.playbackRate = getRate();
-            player.play().catch(() => {});
-        }, { once: true });
-    }
-
-    // ============================================================
-    // UI helpers
-    // ============================================================
-    function updateProgress(current, total) {
-        const pct = total > 0 ? (current / total) * 100 : 0;
-        progFill.style.width = pct + '%';
-        progText.textContent  = current + ' / ' + total + ' đoạn';
-    }
-
-    function showBadge(type) {
-        const old = playerTitle.querySelector('.badge');
-        if (old) old.remove();
-        const badge = document.createElement('span');
-        badge.className = 'badge badge-' + type;
-        badge.textContent = {
-            live:   '● LIVE',
-            done:   '✓ Hoàn thành',
-            cached: '★ Cache',
-            error:  '⚠ Lỗi',
-        }[type] || type;
-        playerTitle.appendChild(badge);
-    }
-
-    function sleep(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    function resetUI() {
-        cleanupMSE();
-        clearInterval(pollingInterval);
-        pollingInterval = null;
-        currentCacheId  = null;
-        lastFileSize    = 0;
-        playerShown     = false;
-        isReloading     = false;
-
-        player.pause();
-        player.removeAttribute('src');
-        player.load();
-
-        progBox.style.display   = 'block';
-        playerBox.style.display = 'none';
-        progFill.style.width    = '0%';
-        statusLbl.textContent   = 'Đang gửi yêu cầu...';
-        progText.textContent    = '0 / 0 đoạn';
-        fileSizeInfo.textContent = '';
-
-        const old = playerTitle.querySelector('.badge');
-        if (old) old.remove();
-    }
+        // ============================================================
+        // Direct playback for cached/completed audio
+        // ============================================================
+        function playDirect(cacheId) {
+            playerBox.style.display = 'block';
+            const url = '/tts/file/' + cacheId + '?t=' + Date.now();
+            player.src = url;
+            player.addEventListener('canplay', function onCanPlay() {
+                player.removeEventListener('canplay', onCanPlay);
+                applyPlaybackRate();
+                player.play().catch(() => {});
+            }, { once: true });
+        }
     </script>
 </body>
 </html>
