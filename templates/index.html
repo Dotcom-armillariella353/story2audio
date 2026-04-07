@@ -301,6 +301,59 @@
                 startFallbackMode(cacheId);
             }
         }, { once: true });
+        
+        // Also listen for "ended" event in case stream ends early while generation is still ongoing
+        player.addEventListener('ended', () => {
+            if (currentCacheId && mediaSource && mediaSource.readyState === 'open') {
+                checkAndFetchMoreDataMSE(cacheId);
+            }
+        });
+    }
+    
+    async function checkAndFetchMoreDataMSE(cacheId) {
+        try {
+            // Get the current buffered amount from sourceBuffer
+            let sentBytes = 0;
+            if (sourceBuffer && sourceBuffer.buffered.length > 0) {
+                // Get the end of the buffered range
+                sentBytes = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
+            }
+            
+            const st = await fetch('/tts/status/' + cacheId);
+            const stData = await st.json();
+            
+            if (stData.status === 'processing' || (stData.status === 'completed' && stData.file_size > sentBytes)) {
+                // Generation still ongoing or there's more data - try to fetch more
+                console.log('[MSE] Playback ended but more data available, fetching more...');
+                
+                if (sourceBuffer && sourceBuffer.updating) {
+                    await waitUpdateEnd(sourceBuffer);
+                }
+                
+                if (!mediaSource || mediaSource.readyState !== 'open') return;
+                
+                // Fetch remaining data
+                const fileRes = await fetch('/tts/file/' + cacheId, {
+                    headers: { 'Range': `bytes=${sentBytes}-` }
+                });
+                
+                if (fileRes.ok || fileRes.status === 206) {
+                    const remainingData = await fileRes.arrayBuffer();
+                    if (remainingData.byteLength > 0) {
+                        if (sourceBuffer && sourceBuffer.updating) await waitUpdateEnd(sourceBuffer);
+                        try {
+                            sourceBuffer.appendBuffer(new Uint8Array(remainingData));
+                            await waitUpdateEnd(sourceBuffer);
+                            console.log('[MSE] Appended more data:', remainingData.byteLength, 'bytes');
+                        } catch (e) {
+                            console.warn('[MSE] Failed to append more data:', e);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[MSE] Error checking for more data:', e);
+        }
     }
 
     function cleanupMSE() {
@@ -450,10 +503,24 @@
     // ============================================================
     // Method 2: Fallback - polling + reload src
     // ============================================================
+    // Listen for player "ended" event to reload if generation is still ongoing
+    player.addEventListener('ended', () => {
+        if (currentCacheId && playerShown && !isReloading) {
+            // Check if generation is still in progress
+            fetch('/tts/status/' + currentCacheId).then(res => res.json()).then(st => {
+                if (st.status === 'processing' || (st.status === 'completed' && st.file_size > lastFileSize)) {
+                    // Still generating - reload to get more data
+                    reloadAudioKeepTime(currentCacheId);
+                }
+            }).catch(() => {});
+        }
+    });
+
     function startFallbackMode(cacheId) {
         lastFileSize = 0;
         playerShown  = false;
         isReloading  = false;
+        
         startPolling(cacheId, true);
     }
 
