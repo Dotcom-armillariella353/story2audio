@@ -580,6 +580,7 @@
                     playerBox.style.display = 'block';
                     applyPlaybackRate();
                     player.play().catch(() => {});
+                    showDownloadButton(cacheId);
                 }
             }
 
