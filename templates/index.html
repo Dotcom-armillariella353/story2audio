@@ -102,6 +102,27 @@
         #playerContainer h3 { margin: 0 0 12px; color: #2c3e50; }
         audio { width: 100%; }
         .info { color: #718096; font-size: 0.9em; margin-top: 10px; }
+        .download-btn {
+            display: none;
+            margin-top: 14px;
+            padding: 10px 22px;
+            background: linear-gradient(135deg, #38a169, #276749);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.2s, transform 0.1s;
+            align-items: center;
+            gap: 8px;
+        }
+        .download-btn:hover {
+            background: linear-gradient(135deg, #276749, #1c4532);
+            transform: translateY(-1px);
+        }
+        .download-btn:active { transform: translateY(0); }
         .badge {
             display: inline-block;
             padding: 2px 8px;
@@ -164,6 +185,9 @@
         <h3 id="playerTitle">Trình phát Audio</h3>
         <audio id="audioPlayer" controls preload="metadata"></audio>
         <p class="info" id="fileSizeInfo"></p>
+        <a id="downloadBtn" class="download-btn" download="audio.mp3">
+            ⬇ Tải xuống MP3
+        </a>
     </div>
 
     <script>
@@ -190,6 +214,7 @@
         const playerTitle = document.getElementById('playerTitle');
         const playerBox = document.getElementById('playerContainer');
         const progBox = document.getElementById('progContainer');
+        const downloadBtn = document.getElementById('downloadBtn');
         const speedSelect = document.getElementById('speedSelect');
         const engineSel = document.getElementById('engine');
         const voiceGroup = document.getElementById('voiceGroup');
@@ -296,6 +321,8 @@
             progFill.style.width = '0%';
             progText.textContent = '0 / 0 đoạn';
             fileSizeInfo.textContent = '';
+            downloadBtn.style.display = 'none';
+            downloadBtn.href = '';
             setStatus('Đang gửi yêu cầu...');
             clearBadge();
         }
@@ -385,6 +412,7 @@
                 setStatus('Đã tìm thấy audio trong cache.');
                 showBadge('cached');
                 playDirect(currentCacheId);
+                showDownloadButton(currentCacheId);
                 btn.disabled = false;
                 return;
             }
@@ -449,6 +477,7 @@
                                 setStatus('Hoàn thành!');
                                 showBadge('done');
                                 fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                                showDownloadButton(cacheId);
                                 clearInterval(pollingInterval);
                                 pollingInterval = null;
                                 btn.disabled = false;
@@ -461,6 +490,7 @@
                             setStatus('Đã tạo xong audio. Đang mở trình phát...');
                             fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
                             showBadge('done');
+                            showDownloadButton(cacheId);
                             clearInterval(pollingInterval);
                             pollingInterval = null;
                             if (allowDirectPlayWhenCompleted) {
@@ -570,6 +600,7 @@
                     setStatus('Hoàn thành!');
                     showBadge('done');
                     fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                    showDownloadButton(cacheId);
                     if (pollingInterval) {
                         clearInterval(pollingInterval);
                         pollingInterval = null;
@@ -582,6 +613,16 @@
             }
 
             btn.disabled = false;
+        }
+
+        // ============================================================
+        // Download button
+        // ============================================================
+        function showDownloadButton(cacheId) {
+            const url = '/tts/file/' + cacheId;
+            downloadBtn.href = url;
+            downloadBtn.download = 'audio_' + cacheId.slice(0, 8) + '.mp3';
+            downloadBtn.style.display = 'inline-flex';
         }
 
         // ============================================================
