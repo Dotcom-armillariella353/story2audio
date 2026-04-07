@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chuyển đổi Truyện thành Audio</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 20px auto; padding: 0 20px; background-color: #f4f7f6; color: #333; }
+        h1 { color: #2c3e50; text-align: center; }
+        textarea { width: 100%; height: 200px; box-sizing: border-box; padding: 15px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; line-height: 1.5; resize: vertical; }
+        .controls { margin: 20px 0; display: flex; flex-wrap: wrap; gap: 15px; align-items: center; justify-content: center; }
+        select, button { padding: 10px 15px; border-radius: 5px; border: 1px solid #ddd; font-size: 15px; }
+        button { background-color: #3498db; color: white; border: none; cursor: pointer; transition: background-color 0.3s; font-weight: bold; }
+        button:hover { background-color: #2980b9; }
+        audio { width: 100%; margin-top: 10px; }
+        .progress-container { margin: 20px 0; display: none; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .progress-bar { width: 100%; background: #eee; height: 12px; border-radius: 6px; overflow: hidden; margin: 10px 0; }
+        .progress-fill { width: 0%; background: #2ecc71; height: 100%; transition: width 0.3s; }
+        .status-text { color: #2c3e50; font-weight: bold; margin-bottom: 5px; }
+        #playerContainer { display: none; margin-top: 20px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .info { color: #7f8c8d; font-size: 0.9em; margin-top: 10px; }
+        #progText { text-align: right; color: #7f8c8d; font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <h1>Chuyển đổi Truyện thành Audio</h1>
+    <textarea id="textInput" placeholder="Nhập nội dung truyện tại đây...">Trong một ngôi làng nọ, có một cậu bé rất thông minh. Cậu thường xuyên giúp đỡ mọi người và được dân làng yêu quý. Một ngày, có một người khách lạ đến làng và đặt ra một câu đố khó. Cậu bé đã suy nghĩ rất lâu và cuối cùng đưa ra được câu trả lời chính xác. Dân làng vô cùng ngưỡng mộ và tự hào về cậu.</textarea>
+
+    <div class="controls">
+        <label>Công cụ:
+            <select id="engine">
+                <option value="edge">Edge-TTS (Chất lượng cao)</option>
+                <option value="gtts">Google TTS</option>
+            </select>
+        </label>
+        <label>Giọng đọc (Edge):
+            <select id="voice">
+                <option value="vi-VN-HoaiMyNeural">Hoài Mỹ (Nữ)</option>
+                <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
+            </select>
+        </label>
+        <button id="convertBtn">Chuyển sang Audio & Nghe</button>
+    </div>
+
+    <div class="progress-container" id="progContainer">
+        <div class="status-text" id="statusLabel">Đang khởi tạo...</div>
+        <div class="progress-bar"><div class="progress-fill" id="progFill"></div></div>
+        <p id="progText">0 / 0 đoạn</p>
+    </div>
+
+    <div id="playerContainer">
+        <h3 style="margin-top: 0;">Trình phát Audio</h3>
+        <audio id="audioPlayer" controls></audio>
+        <p class="info" id="fileSizeInfo"></p>
+    </div>
+
+    <script>
+        let pollingInterval = null;
+        let currentCacheId = null;
+        let lastFileSize = 0;
+        let playerShown = false;
+        let isReloading = false;
+
+        document.getElementById('convertBtn').onclick = async function() {
+            const text = document.getElementById('textInput').value;
+            const engine = document.getElementById('engine').value;
+            const voice = document.getElementById('voice').value;
+
+            if (!text.trim()) { alert('Vui lòng nhập văn bản!'); return; }
+
+            // Reset
+            clearInterval(pollingInterval);
+            currentCacheId = null;
+            lastFileSize = 0;
+            playerShown = false;
+            isReloading = false;
+            document.getElementById('progContainer').style.display = 'block';
+            document.getElementById('progFill').style.width = '0%';
+            document.getElementById('statusLabel').innerText = 'Đang gửi yêu cầu...';
+            document.getElementById('playerContainer').style.display = 'none';
+            document.getElementById('progText').innerText = '0 / 0 đoạn';
+            document.getElementById('fileSizeInfo').innerText = '';
+
+            const params = new URLSearchParams({ text, engine, voice });
+            const response = await fetch('/tts/start?' + params.toString());
+            const data = await response.json();
+            currentCacheId = data.cache_id;
+
+            if (data.status === 'completed') {
+                showPlayer(currentCacheId, 0);
+                updateProgress(1, 1);
+                document.getElementById('statusLabel').innerText = 'Hoàn thành (từ bộ nhớ tạm)!';
+            } else {
+                startPolling(currentCacheId);
+            }
+        };
+
+        function startPolling(cacheId) {
+            if (pollingInterval) clearInterval(pollingInterval);
+            pollingInterval = setInterval(async function() {
+                try {
+                    const res = await fetch('/tts/status/' + cacheId);
+                    const data = await res.json();
+
+                    updateProgress(data.progress || 0, data.total || 0);
+                    document.getElementById('fileSizeInfo').innerText = 
+                        'Kích thước file hiện tại: ' + (data.file_size / 1024 / 1024).toFixed(2) + ' MB';
+
+                    if (data.status === 'processing' || data.status === 'completed') {
+                        document.getElementById('statusLabel').innerText = 
+                            data.status === 'processing' 
+                                ? 'Đang xử lý đoạn ' + data.progress + '/' + data.total + '...' 
+                                : 'Hoàn thành!';
+
+                        // Hiển thị player ngay khi có chunk đầu tiên
+                        if (!playerShown && data.progress >= 1 && data.file_size > 0) {
+                            playerShown = true;
+                            lastFileSize = data.file_size;
+                            showPlayer(cacheId, 0);
+                        } else if (playerShown && !isReloading && data.file_size > lastFileSize) {
+                            // File lớn hơn và không đang reload: cập nhật audio
+                            lastFileSize = data.file_size;
+                            reloadAudioKeepTime(cacheId);
+                        }
+                    }
+
+                    if (data.status === 'completed') {
+                        clearInterval(pollingInterval);
+                        // Reload lần cuối sau 1s để đảm bảo file đầy đủ
+                        setTimeout(function() {
+                            if (!isReloading) reloadAudioKeepTime(cacheId);
+                        }, 1000);
+                    }
+                } catch(e) {
+                    console.error('Lỗi khi kiểm tra trạng thái:', e);
+                }
+            }, 2000);
+        }
+
+        function updateProgress(current, total) {
+            const percent = total > 0 ? (current / total) * 100 : 0;
+            document.getElementById('progFill').style.width = percent + '%';
+            document.getElementById('progText').innerText = current + ' / ' + total + ' đoạn';
+        }
+
+        function setPlayerSrc(cacheId, onReady) {
+            const player = document.getElementById('audioPlayer');
+            // Remove old listeners to prevent duplicate triggers
+            player.oncanplay = null;
+            player.onerror = null;
+            isReloading = true;
+            player.src = '/tts/file/' + cacheId + '?t=' + Date.now();
+            const handleCanPlay = function() {
+                player.removeEventListener('canplay', handleCanPlay);
+                player.removeEventListener('error', handleError);
+                isReloading = false;
+                onReady(player);
+            };
+            const handleError = function() {
+                player.removeEventListener('canplay', handleCanPlay);
+                player.removeEventListener('error', handleError);
+                isReloading = false;
+            };
+            player.addEventListener('canplay', handleCanPlay);
+            player.addEventListener('error', handleError);
+        }
+
+        function showPlayer(cacheId, startTime) {
+            document.getElementById('playerContainer').style.display = 'block';
+            setPlayerSrc(cacheId, function(player) {
+                if (startTime > 0) player.currentTime = startTime;
+                player.play().catch(function() {});
+            });
+        }
+
+        function reloadAudioKeepTime(cacheId) {
+            const player = document.getElementById('audioPlayer');
+            const savedTime = player.currentTime;
+            const wasPlaying = !player.paused;
+            setPlayerSrc(cacheId, function(player) {
+                player.currentTime = savedTime;
+                if (wasPlaying) player.play().catch(function() {});
+            });
+        }
+    </script>
+</body>
+</html>
