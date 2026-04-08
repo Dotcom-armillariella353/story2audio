@@ -1,6 +1,7 @@
 {
   "lang": "ja",
   "title": "ストーリーをオーディオに変換",
+  "version": "バージョン v2.0.2",
   "placeholder": "ここにストーリーを入力してください...",
   "label_engine": "エンジン",
   "label_voice": "音声",

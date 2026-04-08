@@ -308,6 +308,12 @@
                 document.getElementById('playerTitle').appendChild(badge);
             }
             
+            // Version text
+            const versionText = document.getElementById('versionText');
+            if (versionText && t.version) {
+                versionText.textContent = t.version;
+            }
+            
             document.getElementById('downloadBtn').textContent = t.download || '⬇ Download MP3';
 
             // Force dynamic texts to translate

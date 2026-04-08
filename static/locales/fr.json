@@ -1,6 +1,7 @@
 {
   "lang": "fr",
   "title": "Convertisseur de Texte en Audio",
+  "version": "Version v2.0.2",
   "placeholder": "Entrez votre texte ici...",
   "label_engine": "Moteur",
   "label_voice": "Voix",

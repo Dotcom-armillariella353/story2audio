@@ -1,6 +1,7 @@
 {
   "lang": "en",
   "title": "Story to Audio Converter",
+  "version": "Version v2.0.2",
   "placeholder": "Enter your story text here...",
   "label_engine": "Engine",
   "label_voice": "Voice",

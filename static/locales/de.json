@@ -1,6 +1,7 @@
 {
   "lang": "de",
   "title": "Geschichte zu Audio Konverter",
+  "version": "Version v2.0.2",
   "placeholder": "Geben Sie Ihren Text hier ein...",
   "label_engine": "Engine",
   "label_voice": "Stimme",
