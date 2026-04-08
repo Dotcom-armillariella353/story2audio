@@ -234,6 +234,8 @@
         let voiceRegistry = {}; // { langCode: [{value, label}] }
         /* __VOICE_REGISTRY_PLACEHOLDER__ */
         /* __LOCALE_VI_PLACEHOLDER__ */
+        // Seed cache from server-injected locale so it is available after language switches
+        if (_injectedLang) _localeCache[_injectedLang] = t;
 
         // Language display names for labels
         const LANG_NAMES = {
@@ -247,15 +249,10 @@
         };
 
         async function loadLocale(lang) {
-            // 1. Use pre-injected locale (no fetch needed)
-            if (lang === _injectedLang && Object.keys(t).length > 0) {
-                _localeCache[lang] = t;
-                return t;
-            }
-            // 2. Return from in-memory cache (already fetched this session)
+            // 1. Return from in-memory cache (includes server-injected locale)
             if (_localeCache[lang]) return _localeCache[lang];
 
-            // 3. Fetch from server; try requested lang then fallback to 'en', 'vi'
+            // 2. Fetch from server; try requested lang then fallback to 'en', 'vi'
             const candidates = [lang, 'en', 'vi'].filter((l, i, a) => a.indexOf(l) === i);
             for (const candidate of candidates) {
                 try {
