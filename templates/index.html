@@ -230,6 +230,7 @@
         let currentLang = 'vi';
         let t = {};          // current translations
         let voiceRegistry = {}; // { langCode: [{value, label}] }
+        /* __VOICE_REGISTRY_PLACEHOLDER__ */
 
         // Language display names for labels
         const LANG_NAMES = {
@@ -243,16 +244,30 @@
         };
 
         async function loadLocale(lang) {
-            const res = await fetch(`/static/locales/${lang}.json`, { cache: 'no-store' });
-            if (!res.ok) throw new Error('Locale not found: ' + lang);
-            return res.json();
+            // Try requested lang, then fallback to 'en', then 'vi'
+            const candidates = [lang, 'en', 'vi'].filter((l, i, a) => a.indexOf(l) === i);
+            for (const candidate of candidates) {
+                try {
+                    const res = await fetch(`/static/locales/${candidate}.json`, { cache: 'no-store' });
+                    if (res.ok) return res.json();
+                } catch (_) {}
+            }
+            throw new Error('Failed to load any locale (tried: ' + candidates.join(', ') + ')');
         }
 
         async function loadVoiceRegistry() {
+            // Skip API call if voice data was already injected by the server at page load
+            if (Object.keys(voiceRegistry).length > 0) return;
+
             const res = await fetch('/tts/voices', { cache: 'no-store' });
             if (!res.ok) throw new Error('Voices API failed');
             const data = await res.json();
-            voiceRegistry = data.voices || {};
+            if (data && typeof data.voices === 'object' && !Array.isArray(data.voices)) {
+                voiceRegistry = data.voices;
+            } else {
+                console.warn('[TTS] Unexpected voices payload, defaulting to empty registry', data);
+                voiceRegistry = {};
+            }
         }
 
         function applyLocale() {
@@ -735,10 +750,6 @@
         // Language switcher wiring
         // ============================================================
         document.querySelectorAll('.lang-btn').forEach(btn => {
-            // Apply accessible aria-label from LANG_NAMES
-            if (LANG_NAMES[btn.dataset.lang]) {
-                btn.setAttribute('aria-label', LANG_NAMES[btn.dataset.lang]);
-            }
             btn.addEventListener('click', () => switchLanguage(btn.dataset.lang));
         });
 

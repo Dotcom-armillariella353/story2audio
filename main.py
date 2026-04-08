@@ -62,6 +62,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # Config
 # ---------------------------------------------------------------------------
 PROXY = os.getenv("PROXY")
+ENABLE_DEBUG_TTS = os.getenv("ENABLE_DEBUG_TTS", "").lower() in {"1", "true", "yes"}
 
 if PROXY:
     os.environ["HTTP_PROXY"] = PROXY
@@ -692,8 +693,15 @@ def validate_voice(language: str, voice: str, engine: str) -> str:
     if engine == "gtts":
         return ""
 
+    available = EDGE_VOICES.get(language, [])
+    if not available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No voices available for selected language: {language}",
+        )
+
     voice = (voice or "").strip()
-    valid_voices = {v["value"] for v in EDGE_VOICES.get(language, [])}
+    valid_voices = {v["value"] for v in available}
     if voice not in valid_voices:
         raise HTTPException(
             status_code=400,
@@ -892,13 +900,21 @@ async def generate_chunks(
 @app.get("/", response_class=HTMLResponse)
 async def index():
     path = os.path.join(TEMPLATES_DIR, "index.html")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    return HTMLResponse(
-        content="<h3>Template not found.</h3><p>Please create templates/index.html</p>",
-        status_code=200,
+    if not os.path.exists(path):
+        return HTMLResponse(
+            content="<h3>Template not found.</h3><p>Please create templates/index.html</p>",
+            status_code=200,
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        html = f.read()
+    # Inject voice registry so the frontend needs no /tts/voices API call on load
+    import json as _json
+    voices_json = _json.dumps(EDGE_VOICES)
+    html = html.replace(
+        "/* __VOICE_REGISTRY_PLACEHOLDER__ */",
+        f"voiceRegistry = {voices_json};",
     )
+    return html
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -1041,8 +1057,9 @@ async def stream_audio_live(cache_id: str):
             raise HTTPException(status_code=503, detail=f"Generation failed: {err}")
         if st and st.get("status") in {"queued", "processing", "generating"}:
             raise HTTPException(
-                status_code=425,
+                status_code=503,
                 detail="Audio is still being generated, retry later.",
+                headers={"Retry-After": "5"},
             )
         raise HTTPException(status_code=404, detail="Audio not ready")
 
@@ -1096,10 +1113,14 @@ async def stream_audio_live(cache_id: str):
 
 # ---------------------------------------------------------------------------
 # Optional debug route: inspect chunking result
-# Useful while tuning Japanese / CJK behavior
+# Enabled only when ENABLE_DEBUG_TTS=true (not for production use)
+# Uses TTSRequest for input; gated to prevent accidental exposure.
 # ---------------------------------------------------------------------------
 @app.post("/tts/debug/chunks")
 async def debug_chunks(request: TTSRequest):
+    if not ENABLE_DEBUG_TTS:
+        raise HTTPException(status_code=404, detail="Not found")
+
     text = normalize_text(request.text)
     if not text:
         raise HTTPException(status_code=400, detail="Text must not be empty")
