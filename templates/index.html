@@ -293,11 +293,30 @@
             document.getElementById('labelSpeed').textContent  = t.label_speed  || 'Speed';
             document.getElementById('optEdge').textContent = t.engine_edge || 'Edge-TTS';
             document.getElementById('optGtts').textContent = t.engine_gtts || 'Google TTS';
-            document.getElementById('convertBtn').textContent = t.btn_convert || '▶ Convert';
+            
+            // Ensure button text keeps the original state if disabled
+            const btn = document.getElementById('convertBtn');
+            btn.textContent = t.btn_convert || '▶ Convert';
+            
+            // The audio player title shouldn't override the injected span badge if it exists.
+            const badge = document.getElementById('playerTitle').querySelector('.badge');
             document.getElementById('playerTitle').textContent = t.player_title || 'Audio Player';
-            document.getElementById('downloadBtn').textContent = t.download || '⬇ Download MP3';
-            document.getElementById('statusLabel').textContent = t.status_init || '...';
-            document.getElementById('progText').textContent = '0 / 0 ' + (t.segments || '');
+            if (badge) {
+                document.getElementById('playerTitle').appendChild(badge);
+            }
+            
+            document.getElementById('downloadBtn').innerHTML = '⬇ ' + (t.download || 'Download MP3');
+
+            // Force dynamic texts to translate
+            renderStatus();
+            renderFileSize();
+            renderBadge();
+            
+            if (lastStatus && lastStatus.total !== undefined) {
+                updateProgress(lastStatus.progress || 0, lastStatus.total);
+            } else {
+                document.getElementById('progText').textContent = '0 / 0 ' + (t.segments || '');
+            }
         }
 
         function updateVoiceDropdown() {
@@ -386,6 +405,92 @@
 
         function sleep(ms) {
             return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function renderStatus() {
+            if (!lastStatus) {
+                setStatus(t.status_init || '...');
+                return;
+            }
+            const data = lastStatus;
+            
+            // Special states managed early in loop
+            if (currentMode === 'cached') {
+                setStatus(t.status_cached || 'Found in cache.');
+                return;
+            }
+            
+            if (data.status === 'processing' || data.status === 'queued') {
+                const tpl = currentMode === 'mse'
+                    ? (t.status_processing_live || 'Generating {p}/{t} live...')
+                    : (t.status_processing     || 'Generating {p}/{t}...');
+                setStatus(tpl
+                    .replace('{p}', data.progress || 0)
+                    .replace('{t}', data.total    || 0));
+            } else if (data.status === 'failed') {
+                setStatus((t.status_failed || 'Failed: ') + (data.error || 'unknown'));
+            } else if (data.status === 'completed') {
+                const finalSize = data.file_size || 0;
+                if (currentMode === 'mse') {
+                    if (streamFinished && bytesReceived >= finalSize) {
+                        setStatus(t.status_done || 'Done!');
+                    } else {
+                        setStatus(t.status_stream_done_loading || 'Loading final part...');
+                    }
+                } else {
+                    setStatus(t.status_done || 'Done!');
+                }
+            }
+        }
+
+        function renderFileSize() {
+            if (!fileSizeInfo) return;
+            const finalSize = (lastStatus && lastStatus.file_size) ? lastStatus.file_size : 0;
+            
+            if (lastStatus && lastStatus.status === 'completed' && (!currentMode || currentMode !== 'mse' || (streamFinished && bytesReceived >= finalSize))) {
+                if (finalSize > 0) {
+                    fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(finalSize);
+                } else if (bytesReceived > 0) {
+                    fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(bytesReceived);
+                }
+                return;
+            }
+
+            if (finalSize > 0 && bytesReceived > 0 && bytesReceived < finalSize) {
+                fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived) + ' / ' + formatBytes(finalSize);
+                return;
+            }
+
+            if (bytesReceived > 0) {
+                fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived);
+                return;
+            }
+
+            if (!bytesReceived && !finalSize) {
+                fileSizeInfo.textContent = '';
+            }
+        }
+
+        function renderBadge() {
+            const badge = playerTitle.querySelector('.badge');
+            if (!badge) return;
+            const classes = Array.from(badge.classList);
+            let type = null;
+            if (classes.includes('badge-live')) type = 'live';
+            else if (classes.includes('badge-done')) type = 'done';
+            else if (classes.includes('badge-cached')) type = 'cached';
+            else if (classes.includes('badge-error')) type = 'error';
+            else if (classes.includes('badge-wait')) type = 'wait';
+            
+            if (type) {
+                badge.textContent = {
+                    live:   '● LIVE',
+                    done:   t.badge_done   || '✓ Done',
+                    cached: t.badge_cached || '★ Cached',
+                    error:  t.badge_error  || '⚠ Error',
+                    wait:   t.badge_wait   || '… Waiting',
+                }[type] || type;
+            }
         }
 
         function updateProgress(current, total) {
@@ -578,15 +683,8 @@
                     updateProgress(data.progress || 0, data.total || 0);
 
                     if (data.status === 'processing') {
-                        const tpl = currentMode === 'mse'
-                            ? (t.status_processing_live || 'Generating {p}/{t} live...')
-                            : (t.status_processing     || 'Generating {p}/{t}...');
-                        setStatus(tpl
-                            .replace('{p}', data.progress || 0)
-                            .replace('{t}', data.total    || 0));
-                        if (bytesReceived > 0) {
-                            fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived);
-                        }
+                        renderStatus();
+                        renderFileSize();
                         return;
                     }
 
@@ -605,21 +703,15 @@
 
                         if (currentMode === 'mse') {
                             if (streamFinished && bytesReceived >= finalSize) {
-                                setStatus(t.status_done || 'Done!');
                                 showBadge('done');
-                                fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(finalSize);
                                 showDownloadButton(cacheId);
                                 clearInterval(pollingInterval);
                                 pollingInterval = null;
                                 btn.disabled = false;
                             } else {
-                                setStatus(t.status_done_loading || 'Loading final part...');
                                 showBadge('live');
-                                fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived) + ' / ' + formatBytes(finalSize);
                             }
                         } else {
-                            setStatus(t.status_opening || 'Opening player...');
-                            fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(finalSize);
                             showBadge('done');
                             showDownloadButton(cacheId);
                             clearInterval(pollingInterval);
@@ -629,6 +721,8 @@
                             }
                             btn.disabled = false;
                         }
+                        renderStatus();
+                        renderFileSize();
                     }
                 } catch (e) {
                     console.error('Polling error:', e);
@@ -694,7 +788,7 @@
                 if (!value || value.byteLength === 0) continue;
 
                 bytesReceived += value.byteLength;
-                fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived);
+                renderFileSize();
 
                 if (!sourceBuffer || !mediaSource || mediaSource.readyState !== 'open') break;
 
@@ -719,16 +813,14 @@
             if (finalState && finalState.status === 'completed') {
                 const finalSize = finalState.file_size || 0;
                 if (bytesReceived >= finalSize) {
-                    setStatus(t.status_done || 'Done!');
                     showBadge('done');
-                    fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(finalSize);
                     showDownloadButton(cacheId);
                     if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
                 } else {
-                    setStatus(t.status_stream_done_loading || 'Loading final part...');
                     showBadge('live');
-                    fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived) + ' / ' + formatBytes(finalSize);
                 }
+                renderStatus();
+                renderFileSize();
             }
 
             btn.disabled = false;
