@@ -637,13 +637,10 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
                         sentence_count = 0
                 continue
 
-            # Paragraph boundary join: add newline if it's the first unit of a new paragraph
-            # and not already separated by CJK rules.
+            # Paragraph boundary join: Always use double newline when merging separate
+            # paragraphs into the same chunk to preserve the natural TTS pause.
             if unit_idx == 0:
-                if is_cjk_script_char(current[-1]) or is_cjk_script_char(unit[0]):
-                    candidate = current + unit
-                else:
-                    candidate = current + "\n" + unit
+                candidate = current + "\n\n" + unit
             else:
                 candidate = smart_join(current, unit)
 
