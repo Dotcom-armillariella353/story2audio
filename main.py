@@ -929,7 +929,7 @@ async def index():
             "/* __LOCALE_VI_PLACEHOLDER__ */",
             f"t = {vi_locale_json}; _injectedLang = 'vi';",
         )
-    html = html.replace("{{VERSION}}", VERSION)
+    html = html.replace("<!-- __VERSION_PLACEHOLDER__ -->", f'<span style="font-size: 0.4em; color: #718096; vertical-align: middle; font-weight: normal;">{VERSION}</span>')
     return HTMLResponse(content=html)
 
 
