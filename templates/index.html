@@ -169,13 +169,13 @@
     <h1 id="pageTitle">Story to Audio</h1>
 
     <div class="lang-switcher" id="langSwitcher">
-        <button class="lang-btn active" data-lang="vi">🇻🇳 Tiếng Việt</button>
-        <button class="lang-btn" data-lang="en">🇺🇸 English</button>
-        <button class="lang-btn" data-lang="ja">🇯🇵 日本語</button>
-        <button class="lang-btn" data-lang="zh">🇨🇳 中文</button>
-        <button class="lang-btn" data-lang="ko">🇰🇷 한국어</button>
-        <button class="lang-btn" data-lang="fr">🇫🇷 Français</button>
-        <button class="lang-btn" data-lang="de">🇩🇪 Deutsch</button>
+        <button class="lang-btn active" data-lang="vi" aria-label="🇻🇳 Tiếng Việt">🇻🇳 Tiếng Việt</button>
+        <button class="lang-btn" data-lang="en" aria-label="🇺🇸 English">🇺🇸 English</button>
+        <button class="lang-btn" data-lang="ja" aria-label="🇯🇵 日本語">🇯🇵 日本語</button>
+        <button class="lang-btn" data-lang="zh" aria-label="🇨🇳 中文">🇨🇳 中文</button>
+        <button class="lang-btn" data-lang="ko" aria-label="🇰🇷 한국어">🇰🇷 한국어</button>
+        <button class="lang-btn" data-lang="fr" aria-label="🇫🇷 Français">🇫🇷 Français</button>
+        <button class="lang-btn" data-lang="de" aria-label="🇩🇪 Deutsch">🇩🇪 Deutsch</button>
     </div>
 
     <textarea id="textInput" placeholder="..."></textarea>
@@ -261,7 +261,6 @@
             document.getElementById('pageTitle').textContent = t.title || 'Story to Audio';
             document.getElementById('textInput').placeholder = t.placeholder || '';
 
-            // Only set sample text on first load / language switch
             document.getElementById('labelEngine').textContent = t.label_engine || 'Engine';
             document.getElementById('labelVoice').textContent  = t.label_voice  || 'Voice';
             document.getElementById('labelSpeed').textContent  = t.label_speed  || 'Speed';
@@ -297,7 +296,7 @@
             // Load translations
             t = await loadLocale(lang);
             applyLocale();
-            // Set sample text
+            // Set sample text on language switch
             document.getElementById('textInput').value = t.sample_text || '';
             // Update voice dropdown for this language
             updateVoiceDropdown();
@@ -736,6 +735,10 @@
         // Language switcher wiring
         // ============================================================
         document.querySelectorAll('.lang-btn').forEach(btn => {
+            // Apply accessible aria-label from LANG_NAMES
+            if (LANG_NAMES[btn.dataset.lang]) {
+                btn.setAttribute('aria-label', LANG_NAMES[btn.dataset.lang]);
+            }
             btn.addEventListener('click', () => switchLanguage(btn.dataset.lang));
         });
 
@@ -743,8 +746,17 @@
         // Bootstrap
         // ============================================================
         (async () => {
-            await loadVoiceRegistry();
-            await switchLanguage('vi');
+            try {
+                await loadVoiceRegistry();
+                await switchLanguage('vi');
+            } catch (err) {
+                console.error('[TTS] Initialization failed:', err);
+                const statusEl = document.getElementById('statusLabel');
+                if (statusEl) {
+                    statusEl.textContent = 'Initialization failed. Please reload the page.';
+                    statusEl.style.color = '#e53e3e';
+                }
+            }
         })();
     </script>
 </body>

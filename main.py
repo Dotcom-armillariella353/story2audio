@@ -254,13 +254,17 @@ def is_cache_valid(cache_id: str) -> bool:
 
 def get_effective_status(cache_id: str) -> Optional[dict]:
     """
-    Return current status using in-memory state first, then disk metadata.
+    Return current status: in-memory only for active (queued/processing) jobs,
+    disk metadata for terminal (completed/failed) states.
     """
     audio_path = get_audio_path(cache_id)
     file_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
 
-    if cache_id in generation_status:
-        status = dict(generation_status[cache_id])
+    # Only use in-memory state for active jobs; terminal states are persisted to disk
+    # and removed from generation_status to avoid returning stale data.
+    in_mem = generation_status.get(cache_id)
+    if in_mem and in_mem.get("status") in {"queued", "processing"}:
+        status = dict(in_mem)
         status["file_size"] = file_size
         return status
 
@@ -746,6 +750,7 @@ async def generate_chunks(
     engine: str,
     cache_id: str,
     language: str = "vi",
+    chunks: Optional[List[str]] = None,
 ):
     if cache_id not in _generation_locks:
         _generation_locks[cache_id] = asyncio.Lock()
@@ -761,10 +766,11 @@ async def generate_chunks(
             }
             return
 
-        chunks = split_text_into_chunks(text, language=language)
+        # Use pre-computed chunks if provided to avoid duplicate CPU work
+        if chunks is None:
+            chunks = split_text_into_chunks(text, language=language)
         if not chunks:
             err = "Text must not be empty"
-            generation_status[cache_id] = {"status": "failed", "error": err}
             save_cache_meta(
                 cache_id,
                 {
@@ -776,6 +782,8 @@ async def generate_chunks(
                     "language": language,
                 },
             )
+            # Remove from in-memory so get_effective_status reads persisted terminal state
+            generation_status.pop(cache_id, None)
             return
 
         total = len(chunks)
@@ -840,11 +848,6 @@ async def generate_chunks(
             if final_size <= 0:
                 raise RuntimeError("Generated audio file is empty")
 
-            generation_status[cache_id] = {
-                "status": "completed",
-                "progress": total,
-                "total": total,
-            }
             save_cache_meta(
                 cache_id,
                 {
@@ -858,15 +861,12 @@ async def generate_chunks(
                     "language": language,
                 },
             )
+            # Remove from in-memory so get_effective_status reads persisted terminal state
+            generation_status.pop(cache_id, None)
 
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             print(f"[ERROR] generate_chunks engine={engine}: {err}")
-
-            generation_status[cache_id] = {
-                "status": "failed",
-                "error": err,
-            }
 
             remove_audio_file(cache_id)
             save_cache_meta(
@@ -880,6 +880,8 @@ async def generate_chunks(
                     "language": language,
                 },
             )
+            # Remove from in-memory so get_effective_status reads persisted terminal state
+            generation_status.pop(cache_id, None)
         finally:
             _generation_locks.pop(cache_id, None)
 
@@ -934,7 +936,9 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
             "url": f"/tts/file/{cache_id}",
         }
 
-    current = generation_status.get(cache_id)
+    # Use get_effective_status (checks both in-memory and persisted state) to avoid
+    # a race condition where we clean up a cache that is actively being generated.
+    current = get_effective_status(cache_id)
     if current and current.get("status") in {"queued", "processing"}:
         return {
             "cache_id": cache_id,
@@ -967,7 +971,7 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
         },
     )
 
-    background_tasks.add_task(generate_chunks, text, voice, engine, cache_id, language)
+    background_tasks.add_task(generate_chunks, text, voice, engine, cache_id, language, chunk_preview)
     return {
         "cache_id": cache_id,
         "status": "started",
@@ -1035,6 +1039,11 @@ async def stream_audio_live(cache_id: str):
         if st and st.get("status") == "failed":
             err = st.get("error", "generation failed")
             raise HTTPException(status_code=503, detail=f"Generation failed: {err}")
+        if st and st.get("status") in {"queued", "processing", "generating"}:
+            raise HTTPException(
+                status_code=425,
+                detail="Audio is still being generated, retry later.",
+            )
         raise HTTPException(status_code=404, detail="Audio not ready")
 
     async def generate() -> AsyncGenerator[bytes, None]:
