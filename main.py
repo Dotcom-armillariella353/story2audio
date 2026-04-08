@@ -580,10 +580,12 @@ def split_long_text_gently(text: str, limit: int) -> List[str]:
 def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
     """
     Language-aware chunking:
-    - Split paragraphs first (strong boundary)
-    - Use weighted length for CJK
-    - Use smaller chunk profile for ja/zh/ko
-    - Limit sentence count per chunk to avoid overly long spoken chunks
+    - Splits paragraphs and preserves double newlines ('\n\n') as soft boundaries.
+      State persists across paragraphs to merge them efficiently and reduce total chunks.
+    - Uses weighted length for CJK processing.
+    - Uses a specific chunk profile for ja/zh/ko.
+    - Progressively limits sentence count per chunk (very small initial
+      chunk for instant streaming, then scales up to a larger maximum).
     """
     text = normalize_text(text)
     if not text:
@@ -596,6 +598,7 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
 
     chunks: List[str] = []
     size_idx = 0
+    # State persists across paragraphs to allow merging short paragraphs into a single chunk
     current = ""
     sentence_count = 0
 
