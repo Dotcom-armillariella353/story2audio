@@ -131,16 +131,16 @@ CJK_LANGUAGES = {"ja", "zh", "ko"}
 # Default profile for languages with spaces (vi/en/fr/de, etc.)
 # We start with a very small first chunk (1 sentence / 100 chars) for ultra-fast time-to-first-byte
 # then ramp up to avoid having too many chunks overall.
-DEFAULT_CHUNK_SIZES = [100, 400, 1000, 2000, 3500]
+DEFAULT_CHUNK_SIZES = [120, 300, 600, 1500, 3500]
 DEFAULT_HARD_MAX_CHUNK = 3500
-DEFAULT_MAX_SENTENCES_PER_CHUNK = [1, 5, 15, 30, 50]
+# Tăng số câu ở chunk 1 và 2 lên để phòng trường hợp các câu đều rất ngắn
+# [1, 2, 4, 12, 50] -> [2, 4, 8, 15, 50]
+DEFAULT_MAX_SENTENCES_PER_CHUNK = [2, 4, 8, 15, 50]
 
 # Smaller, more conservative profile for CJK
-# effective_len() counts most CJK chars ~2 units,
-# so 50 here ~= ~25 Japanese chars, 200 ~= ~100 Japanese chars, etc.
-CJK_CHUNK_SIZES = [50, 200, 600, 1200, 2000]
+CJK_CHUNK_SIZES = [60, 150, 300, 800, 2000]
 CJK_HARD_MAX_CHUNK = 2000
-CJK_MAX_SENTENCES_PER_CHUNK = [1, 3, 10, 20, 30]
+CJK_MAX_SENTENCES_PER_CHUNK = [2, 4, 8, 12, 30]
 
 # Sentence regex:
 # - Supports . ! ? … 。 ！ ？
