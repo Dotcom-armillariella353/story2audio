@@ -310,8 +310,9 @@
             
             // Version text
             const versionText = document.getElementById('versionText');
+            const appVersion = window.APP_VERSION || '';
             if (versionText && t.version) {
-                versionText.textContent = t.version;
+                versionText.textContent = t.version + appVersion;
             }
             
             document.getElementById('downloadBtn').textContent = t.download || '⬇ Download MP3';
