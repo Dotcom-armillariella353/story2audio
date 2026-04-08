@@ -41,8 +41,10 @@ if sys.platform == "win32":
     )
 
 # ---------------------------------------------------------------------------
-# Basic directories
+# Directories & Setup
 # ---------------------------------------------------------------------------
+VERSION = "v2.0.2"
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -927,6 +929,7 @@ async def index():
             "/* __LOCALE_VI_PLACEHOLDER__ */",
             f"t = {vi_locale_json}; _injectedLang = 'vi';",
         )
+    html = html.replace("{{VERSION}}", VERSION)
     return HTMLResponse(content=html)
 
 
