@@ -602,7 +602,7 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
     current = ""
     sentence_count = 0
 
-    for para_idx, para in enumerate(paragraphs):
+    for para in paragraphs:
         sentences = split_sentences_multilang(para)
         if not sentences:
             continue
