@@ -914,7 +914,7 @@ async def index():
         "/* __VOICE_REGISTRY_PLACEHOLDER__ */",
         f"voiceRegistry = {voices_json};",
     )
-    return html
+    return HTMLResponse(content=html)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
