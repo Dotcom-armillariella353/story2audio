@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chuyển đổi Truyện thành Audio</title>
+    <title>Story to Audio</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
     <style>
         * { box-sizing: border-box; }
@@ -137,32 +137,65 @@
         .badge-cached { background: #bee3f8; color: #2b6cb0; }
         .badge-error { background: #feebc8; color: #c05621; }
         .badge-wait { background: #faf089; color: #975a16; }
+
+        /* Language switcher flags */
+        .lang-switcher {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            margin-bottom: 18px;
+            flex-wrap: wrap;
+        }
+        .lang-btn {
+            padding: 4px 12px;
+            border-radius: 20px;
+            border: 2px solid #cbd5e0;
+            background: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            color: #4a5568;
+        }
+        .lang-btn:hover { border-color: #3182ce; color: #3182ce; }
+        .lang-btn.active {
+            background: #3182ce;
+            border-color: #3182ce;
+            color: #fff;
+        }
     </style>
 </head>
 <body>
-    <h1>Chuyển đổi Truyện thành Audio</h1>
+    <h1 id="pageTitle">Story to Audio</h1>
 
-    <textarea id="textInput" placeholder="Nhập nội dung truyện tại đây...">Trong một ngôi làng nọ, có một cậu bé rất thông minh. Cậu thường xuyên giúp đỡ mọi người và được dân làng yêu quý. Một ngày, có một người khách lạ đến làng và đặt ra một câu đố khó. Cậu bé đã suy nghĩ rất lâu và cuối cùng đưa ra được câu trả lời chính xác. Dân làng vô cùng ngưỡng mộ và tự hào về cậu.</textarea>
+    <div class="lang-switcher" id="langSwitcher">
+        <button class="lang-btn active" data-lang="vi" aria-label="🇻🇳 Tiếng Việt">🇻🇳 Tiếng Việt</button>
+        <button class="lang-btn" data-lang="en" aria-label="🇺🇸 English">🇺🇸 English</button>
+        <button class="lang-btn" data-lang="ja" aria-label="🇯🇵 日本語">🇯🇵 日本語</button>
+        <button class="lang-btn" data-lang="zh" aria-label="🇨🇳 中文">🇨🇳 中文</button>
+        <button class="lang-btn" data-lang="ko" aria-label="🇰🇷 한국어">🇰🇷 한국어</button>
+        <button class="lang-btn" data-lang="fr" aria-label="🇫🇷 Français">🇫🇷 Français</button>
+        <button class="lang-btn" data-lang="de" aria-label="🇩🇪 Deutsch">🇩🇪 Deutsch</button>
+    </div>
+
+    <textarea id="textInput" placeholder="..."></textarea>
 
     <div class="controls">
         <div class="ctrl-group">
-            <label for="engine">Công cụ</label>
+            <label for="engine" id="labelEngine">Engine</label>
             <select id="engine">
-                <option value="edge">Edge-TTS (Chất lượng cao)</option>
-                <option value="gtts">Google TTS</option>
+                <option value="edge" id="optEdge">Edge-TTS</option>
+                <option value="gtts" id="optGtts">Google TTS</option>
             </select>
         </div>
 
         <div class="ctrl-group" id="voiceGroup">
-            <label for="voice">Giọng đọc</label>
-            <select id="voice">
-                <option value="vi-VN-HoaiMyNeural">Hoài Mỹ (Nữ)</option>
-                <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
-            </select>
+            <label for="voice" id="labelVoice">Voice</label>
+            <select id="voice"></select>
         </div>
 
         <div class="ctrl-group">
-            <label for="speedSelect">Tốc độ</label>
+            <label for="speedSelect" id="labelSpeed">Speed</label>
             <select id="speedSelect">
                 <option value="0.75">0.75x</option>
                 <option value="1" selected>1x</option>
@@ -172,31 +205,136 @@
             </select>
         </div>
 
-        <button id="convertBtn">▶ Chuyển sang Audio</button>
+        <button id="convertBtn">▶ Convert</button>
     </div>
 
     <div class="card" id="progContainer">
-        <div class="status-text" id="statusLabel">Đang khởi tạo...</div>
+        <div class="status-text" id="statusLabel">...</div>
         <div class="progress-bar"><div class="progress-fill" id="progFill"></div></div>
-        <p id="progText">0 / 0 đoạn</p>
+        <p id="progText">0 / 0</p>
     </div>
 
     <div class="card" id="playerContainer">
-        <h3 id="playerTitle">Trình phát Audio</h3>
+        <h3 id="playerTitle">Audio Player</h3>
         <audio id="audioPlayer" controls preload="metadata"></audio>
         <p class="info" id="fileSizeInfo"></p>
         <a id="downloadBtn" class="download-btn" download="audio.mp3">
-            ⬇ Tải xuống MP3
+            ⬇ Download MP3
         </a>
     </div>
 
     <script>
         // ============================================================
-        // State
+        // i18n State
+        // ============================================================
+        let currentLang = 'vi';
+        let t = {};          // current translations
+        let _injectedLang = null; // set by server when a locale is pre-loaded
+        const _localeCache = {}; // in-memory cache: langCode -> translations object
+        let voiceRegistry = {}; // { langCode: [{value, label}] }
+        /* __VOICE_REGISTRY_PLACEHOLDER__ */
+        /* __LOCALE_VI_PLACEHOLDER__ */
+        // Seed cache from server-injected locale so it is available after language switches
+        if (_injectedLang) _localeCache[_injectedLang] = t;
+
+        // Language display names for labels
+        const LANG_NAMES = {
+            vi: '🇻🇳 Tiếng Việt',
+            en: '🇺🇸 English',
+            ja: '🇯🇵 日本語',
+            zh: '🇨🇳 中文',
+            ko: '🇰🇷 한국어',
+            fr: '🇫🇷 Français',
+            de: '🇩🇪 Deutsch',
+        };
+
+        async function loadLocale(lang) {
+            // 1. Return from in-memory cache (includes server-injected locale)
+            if (_localeCache[lang]) return _localeCache[lang];
+
+            // 2. Fetch from server; try requested lang then fallback to 'en', 'vi'
+            const candidates = [lang, 'en', 'vi'].filter((l, i, a) => a.indexOf(l) === i);
+            for (const candidate of candidates) {
+                try {
+                    const res = await fetch(`/static/locales/${candidate}.json`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        _localeCache[candidate] = data;
+                        return data;
+                    }
+                } catch (_) {}
+            }
+            throw new Error('Failed to load any locale (tried: ' + candidates.join(', ') + ')');
+        }
+
+        async function loadVoiceRegistry() {
+            // Skip API call if voice data was already injected by the server at page load
+            if (Object.keys(voiceRegistry).length > 0) return;
+
+            const res = await fetch('/tts/voices', { cache: 'no-store' });
+            if (!res.ok) throw new Error('Voices API failed');
+            const data = await res.json();
+            if (data && typeof data.voices === 'object' && !Array.isArray(data.voices)) {
+                voiceRegistry = data.voices;
+            } else {
+                console.warn('[TTS] Unexpected voices payload, defaulting to empty registry', data);
+                voiceRegistry = {};
+            }
+        }
+
+        function applyLocale() {
+            document.documentElement.lang = currentLang;
+            document.title = t.title || 'Story to Audio';
+            document.getElementById('pageTitle').textContent = t.title || 'Story to Audio';
+            document.getElementById('textInput').placeholder = t.placeholder || '';
+
+            document.getElementById('labelEngine').textContent = t.label_engine || 'Engine';
+            document.getElementById('labelVoice').textContent  = t.label_voice  || 'Voice';
+            document.getElementById('labelSpeed').textContent  = t.label_speed  || 'Speed';
+            document.getElementById('optEdge').textContent = t.engine_edge || 'Edge-TTS';
+            document.getElementById('optGtts').textContent = t.engine_gtts || 'Google TTS';
+            document.getElementById('convertBtn').textContent = t.btn_convert || '▶ Convert';
+            document.getElementById('playerTitle').textContent = t.player_title || 'Audio Player';
+            document.getElementById('downloadBtn').textContent = t.download || '⬇ Download MP3';
+            document.getElementById('statusLabel').textContent = t.status_init || '...';
+            document.getElementById('progText').textContent = '0 / 0 ' + (t.segments || '');
+        }
+
+        function updateVoiceDropdown() {
+            const voices = voiceRegistry[currentLang] || [];
+            const sel = document.getElementById('voice');
+            sel.innerHTML = '';
+            voices.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v.value;
+                opt.textContent = v.label;
+                sel.appendChild(opt);
+            });
+            // Show/hide voice group based on engine AND availability
+            updateVoiceVisibility();
+        }
+
+        async function switchLanguage(lang) {
+            currentLang = lang;
+            // Update active button
+            document.querySelectorAll('.lang-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.lang === lang);
+            });
+            // Load translations
+            t = await loadLocale(lang);
+            applyLocale();
+            // Set sample text on language switch
+            document.getElementById('textInput').value = t.sample_text || '';
+            // Update voice dropdown for this language
+            updateVoiceDropdown();
+        }
+
+        // ============================================================
+        // Playback State
         // ============================================================
         let pollingInterval = null;
         let currentCacheId = null;
-        let currentMode = null; // 'mse' | 'fallback' | 'cached'
+        let currentMode = null;
 
         let mediaSource = null;
         let sourceBuffer = null;
@@ -205,20 +343,20 @@
         let streamFinished = false;
         let lastStatus = null;
 
-        const player = document.getElementById('audioPlayer');
-        const btn = document.getElementById('convertBtn');
-        const progFill = document.getElementById('progFill');
-        const progText = document.getElementById('progText');
-        const statusLbl = document.getElementById('statusLabel');
-        const fileSizeInfo = document.getElementById('fileSizeInfo');
+        const player      = document.getElementById('audioPlayer');
+        const btn         = document.getElementById('convertBtn');
+        const progFill    = document.getElementById('progFill');
+        const progText    = document.getElementById('progText');
+        const statusLbl   = document.getElementById('statusLabel');
+        const fileSizeInfo= document.getElementById('fileSizeInfo');
         const playerTitle = document.getElementById('playerTitle');
-        const playerBox = document.getElementById('playerContainer');
-        const progBox = document.getElementById('progContainer');
+        const playerBox   = document.getElementById('playerContainer');
+        const progBox     = document.getElementById('progContainer');
         const downloadBtn = document.getElementById('downloadBtn');
         const speedSelect = document.getElementById('speedSelect');
-        const engineSel = document.getElementById('engine');
-        const voiceGroup = document.getElementById('voiceGroup');
-        const voiceSel = document.getElementById('voice');
+        const engineSel   = document.getElementById('engine');
+        const voiceGroup  = document.getElementById('voiceGroup');
+        const voiceSel    = document.getElementById('voice');
 
         const MSE_SUPPORTED = (
             typeof MediaSource !== 'undefined' &&
@@ -241,7 +379,9 @@
         }
 
         function updateVoiceVisibility() {
-            voiceGroup.style.display = engineSel.value === 'gtts' ? 'none' : '';
+            const isGtts = engineSel.value === 'gtts';
+            const hasVoices = (voiceRegistry[currentLang] || []).length > 0;
+            voiceGroup.style.display = (isGtts || !hasVoices) ? 'none' : '';
         }
 
         function sleep(ms) {
@@ -251,7 +391,7 @@
         function updateProgress(current, total) {
             const pct = total > 0 ? (current / total) * 100 : 0;
             progFill.style.width = pct + '%';
-            progText.textContent = `${current || 0} / ${total || 0} đoạn`;
+            progText.textContent = `${current || 0} / ${total || 0} ${t.segments || ''}`;
         }
 
         function setStatus(text) {
@@ -264,11 +404,11 @@
             const badge = document.createElement('span');
             badge.className = 'badge badge-' + type;
             badge.textContent = {
-                live: '● LIVE',
-                done: '✓ Hoàn thành',
-                cached: '★ Cache',
-                error: '⚠ Lỗi',
-                wait: '… Đang chờ'
+                live:   '● LIVE',
+                done:   t.badge_done   || '✓ Done',
+                cached: t.badge_cached || '★ Cached',
+                error:  t.badge_error  || '⚠ Error',
+                wait:   t.badge_wait   || '… Waiting',
             }[type] || type;
             playerTitle.appendChild(badge);
         }
@@ -286,9 +426,6 @@
             if (streamReader) {
                 try { streamReader.cancel(); } catch (_) {}
                 streamReader = null;
-            }
-            if (sourceBuffer && sourceBuffer.updating) {
-                // nothing else to do here
             }
             if (mediaSource && mediaSource.readyState === 'open') {
                 try { mediaSource.endOfStream(); } catch (_) {}
@@ -319,11 +456,11 @@
             progBox.style.display = 'block';
             playerBox.style.display = 'none';
             progFill.style.width = '0%';
-            progText.textContent = '0 / 0 đoạn';
+            progText.textContent = '0 / 0 ' + (t.segments || '');
             fileSizeInfo.textContent = '';
             downloadBtn.style.display = 'none';
             downloadBtn.href = '';
-            setStatus('Đang gửi yêu cầu...');
+            setStatus(t.status_sending || 'Sending...');
             clearBadge();
         }
 
@@ -337,14 +474,8 @@
         async function appendChunkToSourceBuffer(sb, chunk) {
             await waitSourceBufferIdle(sb);
             return new Promise((resolve, reject) => {
-                const onUpdateEnd = () => {
-                    cleanup();
-                    resolve();
-                };
-                const onError = (e) => {
-                    cleanup();
-                    reject(e);
-                };
+                const onUpdateEnd = () => { cleanup(); resolve(); };
+                const onError = (e) => { cleanup(); reject(e); };
                 const cleanup = () => {
                     sb.removeEventListener('updateend', onUpdateEnd);
                     sb.removeEventListener('error', onError);
@@ -364,26 +495,25 @@
         // Core flow
         // ============================================================
         engineSel.addEventListener('change', updateVoiceVisibility);
-        updateVoiceVisibility();
 
         speedSelect.addEventListener('change', applyPlaybackRate);
         player.addEventListener('play', applyPlaybackRate);
         player.addEventListener('canplay', applyPlaybackRate);
 
         btn.onclick = async function () {
-            const text = document.getElementById('textInput').value.trim();
+            const text   = document.getElementById('textInput').value.trim();
             const engine = engineSel.value;
-            const voice = voiceSel.value;
+            const voice  = voiceSel.value;
 
             if (!text) {
-                alert('Vui lòng nhập văn bản!');
+                alert(t.alert_empty || 'Please enter text!');
                 return;
             }
 
             resetUI();
             btn.disabled = true;
 
-            const body = { text, engine };
+            const body = { text, engine, language: currentLang };
             if (engine === 'edge') body.voice = voice;
 
             let data;
@@ -395,10 +525,10 @@
                 });
                 data = await res.json();
                 if (!res.ok) {
-                    throw new Error(data.detail || 'Không thể bắt đầu tạo audio');
+                    throw new Error(data.detail || (t.status_failed || 'Failed'));
                 }
             } catch (e) {
-                setStatus('Lỗi kết nối: ' + (e.message || e));
+                setStatus((t.err_connect || 'Error: ') + (e.message || e));
                 showBadge('error');
                 btn.disabled = false;
                 return;
@@ -409,7 +539,7 @@
             if (data.status === 'completed') {
                 currentMode = 'cached';
                 updateProgress(1, 1);
-                setStatus('Đã tìm thấy audio trong cache.');
+                setStatus(t.status_cached || 'Found in cache.');
                 showBadge('cached');
                 playDirect(currentCacheId);
                 showDownloadButton(currentCacheId);
@@ -420,13 +550,13 @@
             if (MSE_SUPPORTED) {
                 currentMode = 'mse';
                 showBadge('live');
-                setStatus('Đang tạo audio và phát trực tiếp...');
+                setStatus(t.status_generating_live || 'Generating and streaming...');
                 startPolling(currentCacheId, { allowDirectPlayWhenCompleted: false });
                 startMSEPlayback(currentCacheId);
             } else {
                 currentMode = 'fallback';
                 showBadge('wait');
-                setStatus('Trình duyệt không hỗ trợ phát trực tiếp. Đang tạo audio, sẽ phát khi hoàn thành...');
+                setStatus(t.status_no_mse || 'Generating, will play when done...');
                 startPolling(currentCacheId, { allowDirectPlayWhenCompleted: true });
             }
         };
@@ -441,20 +571,21 @@
             pollingInterval = setInterval(async () => {
                 try {
                     const res = await fetch('/tts/status/' + cacheId, { cache: 'no-store' });
-                    if (!res.ok) throw new Error('Không lấy được trạng thái');
+                    if (!res.ok) throw new Error(t.err_status || 'Could not fetch status');
                     const data = await res.json();
                     lastStatus = data;
 
                     updateProgress(data.progress || 0, data.total || 0);
 
                     if (data.status === 'processing') {
-                        if (currentMode === 'mse') {
-                            setStatus(`Đang tạo audio đoạn ${data.progress || 0}/${data.total || 0} và phát trực tiếp...`);
-                        } else {
-                            setStatus(`Đang tạo audio đoạn ${data.progress || 0}/${data.total || 0}...`);
-                        }
+                        const tpl = currentMode === 'mse'
+                            ? (t.status_processing_live || 'Generating {p}/{t} live...')
+                            : (t.status_processing     || 'Generating {p}/{t}...');
+                        setStatus(tpl
+                            .replace('{p}', data.progress || 0)
+                            .replace('{t}', data.total    || 0));
                         if (bytesReceived > 0) {
-                            fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)}`;
+                            fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived);
                         }
                         return;
                     }
@@ -462,7 +593,7 @@
                     if (data.status === 'failed') {
                         clearInterval(pollingInterval);
                         pollingInterval = null;
-                        setStatus('Lỗi tạo audio: ' + (data.error || 'unknown'));
+                        setStatus((t.status_failed || 'Failed: ') + (data.error || 'unknown'));
                         showBadge('error');
                         btn.disabled = false;
                         return;
@@ -474,21 +605,21 @@
 
                         if (currentMode === 'mse') {
                             if (streamFinished && bytesReceived >= finalSize) {
-                                setStatus('Hoàn thành!');
+                                setStatus(t.status_done || 'Done!');
                                 showBadge('done');
-                                fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                                fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(finalSize);
                                 showDownloadButton(cacheId);
                                 clearInterval(pollingInterval);
                                 pollingInterval = null;
                                 btn.disabled = false;
                             } else {
-                                setStatus('Đã tạo xong audio, đang nạp phần cuối để phát...');
+                                setStatus(t.status_done_loading || 'Loading final part...');
                                 showBadge('live');
-                                fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)} / ${formatBytes(finalSize)}`;
+                                fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived) + ' / ' + formatBytes(finalSize);
                             }
                         } else {
-                            setStatus('Đã tạo xong audio. Đang mở trình phát...');
-                            fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                            setStatus(t.status_opening || 'Opening player...');
+                            fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(finalSize);
                             showBadge('done');
                             showDownloadButton(cacheId);
                             clearInterval(pollingInterval);
@@ -524,7 +655,7 @@
                     await pumpLiveStream(cacheId);
                 } catch (e) {
                     console.error('[MSE] sourceopen error:', e);
-                    setStatus('Không thể phát trực tiếp. Hệ thống sẽ chờ đến khi audio hoàn thành.');
+                    setStatus(t.status_stream_error || 'Cannot stream live. Waiting...');
                     showBadge('wait');
                     cleanupMSE();
                     currentMode = 'fallback';
@@ -536,14 +667,10 @@
         async function pumpLiveStream(cacheId) {
             let response = null;
 
-            // Stream endpoint có thể chưa sẵn sàng ngay lập tức; thử vài lần
             for (let attempt = 0; attempt < 40; attempt++) {
                 try {
                     const res = await fetch('/tts/stream/' + cacheId, { cache: 'no-store' });
-                    if (res.ok) {
-                        response = res;
-                        break;
-                    }
+                    if (res.ok) { response = res; break; }
                     if (res.status === 503) {
                         const err = await res.json().catch(() => ({}));
                         throw new Error(err.detail || 'Generation failed');
@@ -555,7 +682,7 @@
             }
 
             if (!response || !response.body) {
-                throw new Error('Không thể mở live stream');
+                throw new Error(t.err_no_stream || 'Cannot open live stream');
             }
 
             streamReader = response.body.getReader();
@@ -567,11 +694,9 @@
                 if (!value || value.byteLength === 0) continue;
 
                 bytesReceived += value.byteLength;
-                fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)}`;
+                fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived);
 
-                if (!sourceBuffer || !mediaSource || mediaSource.readyState !== 'open') {
-                    break;
-                }
+                if (!sourceBuffer || !mediaSource || mediaSource.readyState !== 'open') break;
 
                 await appendChunkToSourceBuffer(sourceBuffer, value);
 
@@ -585,30 +710,24 @@
 
             streamFinished = true;
 
-            if (sourceBuffer) {
-                await waitSourceBufferIdle(sourceBuffer);
-            }
+            if (sourceBuffer) await waitSourceBufferIdle(sourceBuffer);
             if (mediaSource && mediaSource.readyState === 'open') {
                 try { mediaSource.endOfStream(); } catch (_) {}
             }
 
-            // Cập nhật UI sau khi stream xong: chỉ báo done nếu backend completed và đã nhận đủ bytes
             const finalState = lastStatus;
             if (finalState && finalState.status === 'completed') {
                 const finalSize = finalState.file_size || 0;
                 if (bytesReceived >= finalSize) {
-                    setStatus('Hoàn thành!');
+                    setStatus(t.status_done || 'Done!');
                     showBadge('done');
-                    fileSizeInfo.textContent = `Kích thước file: ${formatBytes(finalSize)}`;
+                    fileSizeInfo.textContent = (t.filesize || 'File size: ') + formatBytes(finalSize);
                     showDownloadButton(cacheId);
-                    if (pollingInterval) {
-                        clearInterval(pollingInterval);
-                        pollingInterval = null;
-                    }
+                    if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
                 } else {
-                    setStatus('Đã tạo xong audio, nhưng trình phát vẫn đang nạp phần cuối...');
+                    setStatus(t.status_stream_done_loading || 'Loading final part...');
                     showBadge('live');
-                    fileSizeInfo.textContent = `Đã nhận: ${formatBytes(bytesReceived)} / ${formatBytes(finalSize)}`;
+                    fileSizeInfo.textContent = (t.received || 'Received: ') + formatBytes(bytesReceived) + ' / ' + formatBytes(finalSize);
                 }
             }
 
@@ -638,6 +757,30 @@
                 player.play().catch(() => {});
             }, { once: true });
         }
+
+        // ============================================================
+        // Language switcher wiring
+        // ============================================================
+        document.querySelectorAll('.lang-btn').forEach(btn => {
+            btn.addEventListener('click', () => switchLanguage(btn.dataset.lang));
+        });
+
+        // ============================================================
+        // Bootstrap
+        // ============================================================
+        (async () => {
+            try {
+                await loadVoiceRegistry();
+                await switchLanguage('vi');
+            } catch (err) {
+                console.error('[TTS] Initialization failed:', err);
+                const statusEl = document.getElementById('statusLabel');
+                if (statusEl) {
+                    statusEl.textContent = 'Initialization failed. Please reload the page.';
+                    statusEl.style.color = '#e53e3e';
+                }
+            }
+        })();
     </script>
 </body>
 </html>
