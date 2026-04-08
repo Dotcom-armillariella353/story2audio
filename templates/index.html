@@ -229,8 +229,10 @@
         // ============================================================
         let currentLang = 'vi';
         let t = {};          // current translations
+        let _injectedLang = null; // set by server when a locale is pre-loaded
         let voiceRegistry = {}; // { langCode: [{value, label}] }
         /* __VOICE_REGISTRY_PLACEHOLDER__ */
+        /* __LOCALE_VI_PLACEHOLDER__ */
 
         // Language display names for labels
         const LANG_NAMES = {
@@ -244,6 +246,9 @@
         };
 
         async function loadLocale(lang) {
+            // Use pre-injected locale when available — avoids a network fetch on first paint
+            if (lang === _injectedLang && Object.keys(t).length > 0) return t;
+
             // Try requested lang, then fallback to 'en', then 'vi'
             const candidates = [lang, 'en', 'vi'].filter((l, i, a) => a.indexOf(l) === i);
             for (const candidate of candidates) {

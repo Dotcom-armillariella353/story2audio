@@ -908,12 +908,20 @@ async def index():
     with open(path, "r", encoding="utf-8") as f:
         html = f.read()
     # Inject voice registry so the frontend needs no /tts/voices API call on load
-    import json as _json
-    voices_json = _json.dumps(EDGE_VOICES)
+    voices_json = json.dumps(EDGE_VOICES)
     html = html.replace(
         "/* __VOICE_REGISTRY_PLACEHOLDER__ */",
         f"voiceRegistry = {voices_json};",
     )
+    # Inject default (vi) locale so the first paint needs no locale fetch
+    vi_locale_path = os.path.join(STATIC_DIR, "locales", "vi.json")
+    if os.path.exists(vi_locale_path):
+        with open(vi_locale_path, "r", encoding="utf-8") as lf:
+            vi_locale_json = json.dumps(json.load(lf))
+        html = html.replace(
+            "/* __LOCALE_VI_PLACEHOLDER__ */",
+            f"t = {vi_locale_json}; _injectedLang = 'vi';",
+        )
     return HTMLResponse(content=html)
 
 
@@ -1163,4 +1171,6 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
