@@ -230,6 +230,7 @@
         let currentLang = 'vi';
         let t = {};          // current translations
         let _injectedLang = null; // set by server when a locale is pre-loaded
+        const _localeCache = {}; // in-memory cache: langCode -> translations object
         let voiceRegistry = {}; // { langCode: [{value, label}] }
         /* __VOICE_REGISTRY_PLACEHOLDER__ */
         /* __LOCALE_VI_PLACEHOLDER__ */
@@ -246,15 +247,24 @@
         };
 
         async function loadLocale(lang) {
-            // Use pre-injected locale when available — avoids a network fetch on first paint
-            if (lang === _injectedLang && Object.keys(t).length > 0) return t;
+            // 1. Use pre-injected locale (no fetch needed)
+            if (lang === _injectedLang && Object.keys(t).length > 0) {
+                _localeCache[lang] = t;
+                return t;
+            }
+            // 2. Return from in-memory cache (already fetched this session)
+            if (_localeCache[lang]) return _localeCache[lang];
 
-            // Try requested lang, then fallback to 'en', then 'vi'
+            // 3. Fetch from server; try requested lang then fallback to 'en', 'vi'
             const candidates = [lang, 'en', 'vi'].filter((l, i, a) => a.indexOf(l) === i);
             for (const candidate of candidates) {
                 try {
-                    const res = await fetch(`/static/locales/${candidate}.json`, { cache: 'no-store' });
-                    if (res.ok) return res.json();
+                    const res = await fetch(`/static/locales/${candidate}.json`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        _localeCache[candidate] = data;
+                        return data;
+                    }
                 } catch (_) {}
             }
             throw new Error('Failed to load any locale (tried: ' + candidates.join(', ') + ')');
