@@ -44,6 +44,61 @@ PROXY = os.getenv("PROXY")
 CACHE_DIR = "audio_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Language & Voice Registry
+# ---------------------------------------------------------------------------
+
+# Edge TTS voices per language: { lang_code: [ {value, label}, ... ] }
+EDGE_VOICES: Dict[str, List[Dict[str, str]]] = {
+    "vi": [
+        {"value": "vi-VN-HoaiMyNeural",  "label": "Hoài Mỹ (Nữ)"},
+        {"value": "vi-VN-NamMinhNeural", "label": "Nam Minh (Nam)"},
+    ],
+    "en": [
+        {"value": "en-US-AriaNeural",    "label": "Aria (Female, US)"},
+        {"value": "en-US-GuyNeural",     "label": "Guy (Male, US)"},
+        {"value": "en-US-JennyNeural",   "label": "Jenny (Female, US)"},
+        {"value": "en-GB-SoniaNeural",   "label": "Sonia (Female, UK)"},
+        {"value": "en-GB-RyanNeural",    "label": "Ryan (Male, UK)"},
+        {"value": "en-AU-NatashaNeural", "label": "Natasha (Female, AU)"},
+    ],
+    "ja": [
+        {"value": "ja-JP-NanamiNeural",  "label": "Nanami (女性)"},
+        {"value": "ja-JP-KeitaNeural",   "label": "Keita (男性)"},
+    ],
+    "zh": [
+        {"value": "zh-CN-XiaoxiaoNeural","label": "晓晓 (女, 普通话)"},
+        {"value": "zh-CN-YunxiNeural",   "label": "云希 (男, 普通话)"},
+        {"value": "zh-TW-HsiaoChenNeural","label": "曉臻 (女, 台灣)"},
+    ],
+    "ko": [
+        {"value": "ko-KR-SunHiNeural",   "label": "선히 (여성)"},
+        {"value": "ko-KR-InJoonNeural",  "label": "인준 (남성)"},
+    ],
+    "fr": [
+        {"value": "fr-FR-DeniseNeural",  "label": "Denise (Femme, FR)"},
+        {"value": "fr-FR-HenriNeural",   "label": "Henri (Homme, FR)"},
+        {"value": "fr-CA-SylvieNeural",  "label": "Sylvie (Femme, CA)"},
+    ],
+    "de": [
+        {"value": "de-DE-KatjaNeural",   "label": "Katja (Weiblich)"},
+        {"value": "de-DE-ConradNeural",  "label": "Conrad (Männlich)"},
+    ],
+}
+
+# gTTS language code mapping
+GTTS_LANG_MAP: Dict[str, str] = {
+    "vi": "vi",
+    "en": "en",
+    "ja": "ja",
+    "zh": "zh",
+    "ko": "ko",
+    "fr": "fr",
+    "de": "de",
+}
+
+SUPPORTED_LANGUAGES = list(EDGE_VOICES.keys())
+
 if PROXY:
     os.environ["HTTP_PROXY"] = PROXY
     os.environ["HTTPS_PROXY"] = PROXY
@@ -234,7 +289,7 @@ async def edge_tts_to_bytes(text: str, voice: str) -> bytes:
     return b"".join(parts)
 
 
-def gtts_to_bytes(text: str) -> bytes:
+def gtts_to_bytes(text: str, lang: str = "vi") -> bytes:
     """
     Synchronous gTTS -> bytes (run in executor).
     Retries transient network/socket failures.
@@ -242,7 +297,7 @@ def gtts_to_bytes(text: str) -> bytes:
     last_exc = None
     for attempt in range(3):
         try:
-            tts = gTTS(text=text, lang="vi", timeout=15)
+            tts = gTTS(text=text, lang=lang, timeout=15)
             buf = io.BytesIO()
             tts.write_to_fp(buf)
             return buf.getvalue()
@@ -262,7 +317,7 @@ def gtts_to_bytes(text: str) -> bytes:
 # Background generation
 # ---------------------------------------------------------------------------
 
-async def generate_chunks(text: str, voice: str, engine: str, cache_id: str):
+async def generate_chunks(text: str, voice: str, engine: str, cache_id: str, language: str = "vi"):
     if cache_id not in _generation_locks:
         _generation_locks[cache_id] = asyncio.Lock()
 
@@ -310,7 +365,8 @@ async def generate_chunks(text: str, voice: str, engine: str, cache_id: str):
                 if engine == "edge":
                     audio = await edge_tts_to_bytes(chunk_text, voice)
                 else:
-                    audio = await loop.run_in_executor(None, gtts_to_bytes, chunk_text)
+                    gtts_lang = GTTS_LANG_MAP.get(language, "en")
+                    audio = await loop.run_in_executor(None, gtts_to_bytes, chunk_text, gtts_lang)
 
                 if not audio:
                     continue
@@ -397,6 +453,13 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "vi-VN-HoaiMyNeural"
     engine: str = "edge"
+    language: str = "vi"
+
+
+@app.get("/tts/voices")
+async def get_voices():
+    """Return the voice registry and supported languages for the frontend."""
+    return {"voices": EDGE_VOICES, "languages": SUPPORTED_LANGUAGES}
 
 
 @app.post("/tts/start")
@@ -408,6 +471,10 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
     engine = (request.engine or "edge").lower().strip()
     if engine not in {"edge", "gtts"}:
         raise HTTPException(status_code=400, detail="Unsupported engine")
+
+    language = (request.language or "vi").lower().strip()
+    if language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
 
     voice = request.voice.strip() if engine == "edge" else ""
     cache_id = get_cache_id(text, voice, engine)
@@ -425,7 +492,7 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
     if os.path.exists(audio_path) or os.path.exists(meta_path):
         cleanup_incomplete_cache(cache_id)
 
-    background_tasks.add_task(generate_chunks, text, voice, engine, cache_id)
+    background_tasks.add_task(generate_chunks, text, voice, engine, cache_id, language)
     return {"cache_id": cache_id, "status": "started"}
 
 
