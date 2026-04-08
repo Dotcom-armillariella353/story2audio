@@ -908,7 +908,7 @@ async def index():
     with open(path, "r", encoding="utf-8") as f:
         html = f.read()
     # Inject voice registry so the frontend needs no /tts/voices API call on load
-    voices_json = json.dumps(EDGE_VOICES)
+    voices_json = json.dumps(EDGE_VOICES, ensure_ascii=False)
     html = html.replace(
         "/* __VOICE_REGISTRY_PLACEHOLDER__ */",
         f"voiceRegistry = {voices_json};",
@@ -917,7 +917,7 @@ async def index():
     vi_locale_path = os.path.join(STATIC_DIR, "locales", "vi.json")
     if os.path.exists(vi_locale_path):
         with open(vi_locale_path, "r", encoding="utf-8") as lf:
-            vi_locale_json = json.dumps(json.load(lf))
+            vi_locale_json = json.dumps(json.load(lf), ensure_ascii=False)
         html = html.replace(
             "/* __LOCALE_VI_PLACEHOLDER__ */",
             f"t = {vi_locale_json}; _injectedLang = 'vi';",
