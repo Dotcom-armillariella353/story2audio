@@ -129,16 +129,18 @@ CJK_LANGUAGES = {"ja", "zh", "ko"}
 # Chunking profiles
 # ---------------------------------------------------------------------------
 # Default profile for languages with spaces (vi/en/fr/de, etc.)
-DEFAULT_CHUNK_SIZES = [220, 450, 850, 1250, 1800]
-DEFAULT_HARD_MAX_CHUNK = 1800
-DEFAULT_MAX_SENTENCES_PER_CHUNK = [3, 5, 7, 9, 12]
+# We start with a very small first chunk (1 sentence / 100 chars) for ultra-fast time-to-first-byte
+# then ramp up to avoid having too many chunks overall.
+DEFAULT_CHUNK_SIZES = [100, 400, 1000, 2000, 3500]
+DEFAULT_HARD_MAX_CHUNK = 3500
+DEFAULT_MAX_SENTENCES_PER_CHUNK = [1, 5, 15, 30, 50]
 
 # Smaller, more conservative profile for CJK
 # effective_len() counts most CJK chars ~2 units,
-# so 180 here ~= ~90 Japanese chars, 320 ~= ~160 Japanese chars, etc.
-CJK_CHUNK_SIZES = [180, 320, 460, 620, 820]
-CJK_HARD_MAX_CHUNK = 820
-CJK_MAX_SENTENCES_PER_CHUNK = [2, 3, 4, 5, 6]
+# so 50 here ~= ~25 Japanese chars, 200 ~= ~100 Japanese chars, etc.
+CJK_CHUNK_SIZES = [50, 200, 600, 1200, 2000]
+CJK_HARD_MAX_CHUNK = 2000
+CJK_MAX_SENTENCES_PER_CHUNK = [1, 3, 10, 20, 30]
 
 # Sentence regex:
 # - Supports . ! ? … 。 ！ ？
@@ -578,10 +580,12 @@ def split_long_text_gently(text: str, limit: int) -> List[str]:
 def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
     """
     Language-aware chunking:
-    - Split paragraphs first (strong boundary)
-    - Use weighted length for CJK
-    - Use smaller chunk profile for ja/zh/ko
-    - Limit sentence count per chunk to avoid overly long spoken chunks
+    - Splits paragraphs and preserves double newlines ('\n\n') as soft boundaries.
+      State persists across paragraphs to merge them efficiently and reduce total chunks.
+    - Uses weighted length for CJK processing.
+    - Uses a specific chunk profile for ja/zh/ko.
+    - Progressively limits sentence count per chunk (very small initial
+      chunk for instant streaming, then scales up to a larger maximum).
     """
     text = normalize_text(text)
     if not text:
@@ -594,6 +598,9 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
 
     chunks: List[str] = []
     size_idx = 0
+    # State persists across paragraphs to allow merging short paragraphs into a single chunk
+    current = ""
+    sentence_count = 0
 
     for para in paragraphs:
         sentences = split_sentences_multilang(para)
@@ -601,7 +608,6 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
             continue
 
         normalized_units: List[str] = []
-
         for sentence in sentences:
             if effective_len(sentence) > hard_max:
                 normalized_units.extend(split_long_text_gently(sentence, hard_max))
@@ -611,10 +617,7 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
         if not normalized_units:
             continue
 
-        current = ""
-        sentence_count = 0
-
-        for unit in normalized_units:
+        for unit_idx, unit in enumerate(normalized_units):
             max_len = chunk_sizes[min(size_idx, len(chunk_sizes) - 1)]
             max_sentences = max_sentences_profile[min(size_idx, len(max_sentences_profile) - 1)]
 
@@ -623,8 +626,6 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
                     current = unit
                     sentence_count = 1
                 else:
-                    # If unit is still bigger than current stage limit,
-                    # split it again using the current stage limit.
                     sub = split_long_text_gently(unit, max_len)
                     if sub:
                         current = sub[0]
@@ -639,7 +640,13 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
                         sentence_count = 0
                 continue
 
-            candidate = smart_join(current, unit)
+            # Paragraph boundary join: Always use double newline when merging separate
+            # paragraphs into the same chunk to preserve the natural TTS pause.
+            if unit_idx == 0:
+                candidate = current + "\n\n" + unit
+            else:
+                candidate = smart_join(current, unit)
+
             candidate_sentences = sentence_count + 1
 
             if effective_len(candidate) <= max_len and candidate_sentences <= max_sentences:
@@ -667,10 +674,8 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
                         current = ""
                         sentence_count = 0
 
-        # Paragraph is a strong boundary -> flush at paragraph end
-        if current.strip():
-            chunks.append(current.strip())
-            size_idx += 1
+    if current.strip():
+        chunks.append(current.strip())
 
     return [c for c in chunks if c.strip()]
 
