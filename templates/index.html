@@ -305,7 +305,7 @@
                 document.getElementById('playerTitle').appendChild(badge);
             }
             
-            document.getElementById('downloadBtn').innerHTML = '⬇ ' + (t.download || 'Download MP3');
+            document.getElementById('downloadBtn').textContent = t.download || '⬇ Download MP3';
 
             // Force dynamic texts to translate
             renderStatus();
