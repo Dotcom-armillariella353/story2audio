@@ -1,7 +1,7 @@
 [project]
 name = "story2audio"
-version = "0.1.0"
-description = "Ứng dụng FastAPI chuyển văn bản tiếng Việt thành audio MP3 với streaming và cache"
+version = "3.0.0"
+description = "Ứng dụng FastAPI chuyển văn bản thành audio MP3 với streaming, cache và phụ đề trực tiếp (Live Subtitles)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
