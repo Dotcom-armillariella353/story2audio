@@ -42,7 +42,7 @@ Chúng tôi luôn muốn làm cho Story2Audio tốt hơn. Để đề xuất tí
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   pip install -r requirements.txt # hoặc cài các thư viện trong README
+   pip install fastapi edge-tts gtts python-dotenv "uvicorn[standard]"
    ```
 4. **Tạo branch mới** cho tính năng/bản vá của bạn:
    ```bash
