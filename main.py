@@ -1406,15 +1406,14 @@ async def stream_cues_live(cache_id: str, request: Request):
         last_heartbeat = time.time()
         stable_completed_checks = 0
 
-        def _yield_cue(payload: dict) -> bool:
-            """Yield cue event với id field; trả True nếu cue index > resume_after_index."""
+        def _emit_cue_line(payload: dict) -> Optional[str]:
+            """Tạo SSE event string cho cue, hoặc None nếu cue đã được gửi."""
             cue_idx = payload.get("index", 0)
             if cue_idx <= resume_after_index:
-                return False
+                return None
             event_id = str(cue_idx)
             data_str = json.dumps(payload, ensure_ascii=False)
-            yield f"id: {event_id}\nevent: cue\ndata: {data_str}\n\n"
-            return True
+            return f"id: {event_id}\nevent: cue\ndata: {data_str}\n\n"
 
         while True:
             if os.path.exists(jsonl_path):
@@ -1433,7 +1432,9 @@ async def stream_cues_live(cache_id: str, request: Request):
                                 payload = json.loads(line)
                             except json.JSONDecodeError:
                                 continue
-                            yield from _yield_cue(payload)
+                            evt = _emit_cue_line(payload)
+                            if evt:
+                                yield evt
                 except OSError:
                     pass
 
@@ -1465,7 +1466,9 @@ async def stream_cues_live(cache_id: str, request: Request):
                                     payload = json.loads(line)
                                 except json.JSONDecodeError:
                                     continue
-                                yield from _yield_cue(payload)
+                                evt = _emit_cue_line(payload)
+                                if evt:
+                                    yield evt
 
                             if not has_more:
                                 stable_completed_checks += 1
