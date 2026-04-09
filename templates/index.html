@@ -275,9 +275,10 @@
         </div>
 
         <div class="tip">
-            • Nếu dùng <b>Edge-TTS</b>, audio sẽ được stream live và subtitle cũng được stream live theo cue thời gian.<br>
-            • Nếu dùng <b>Google TTS</b>, ứng dụng chỉ phát audio khi file hoàn tất.
+            • <b>Edge‑TTS</b>: phát audio live và có subtitle chạy theo thời gian.<br>
+            • <b>Google TTS</b>: phát audio live ngay khi có dữ liệu, nhưng <b>không hỗ trợ subtitle</b>.
         </div>
+
     </div>
 
     <div class="card status-wrap" id="statusWrap">
@@ -877,7 +878,7 @@
             subtitleSupported = !!data.subtitle_supported;
             playerWrap.style.display = 'block';
 
-            if (subtitleSupported) {
+            if (engine === 'edge') {
                 startSubtitleEventStream(currentCacheId);
             }
 
@@ -896,23 +897,26 @@
                 return;
             }
 
-            if (MSE_SUPPORTED && engine === 'edge') {
+            if (MSE_SUPPORTED) {
                 currentMode = 'mse';
-                setBadge('live');
-                setStatus('Đang tạo audio + subtitle live...');
+
+                if (engine === 'edge') {
+                    setBadge('live');
+                    setStatus('Đang tạo audio + subtitle live...');
+                } else {
+                    setBadge('live');
+                    setStatus('Đang tạo audio live (Google TTS, không subtitle)...');
+                }
+
                 startPolling(currentCacheId, { allowDirectPlayWhenCompleted: false });
                 startMSEPlayback(currentCacheId);
-            } else if (engine === 'gtts') {
-                currentMode = 'fallback';
-                setBadge('wait');
-                setStatus('Google TTS không có subtitle, sẽ phát khi xong file...');
-                startPolling(currentCacheId, { allowDirectPlayWhenCompleted: true });
             } else {
                 currentMode = 'fallback';
                 setBadge('wait');
                 setStatus('Trình duyệt không hỗ trợ live stream MP3, sẽ phát khi xong file...');
                 startPolling(currentCacheId, { allowDirectPlayWhenCompleted: true });
             }
+
         });
 
         document.querySelectorAll('.lang-btn').forEach(btn => {
