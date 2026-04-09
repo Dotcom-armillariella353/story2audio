@@ -780,7 +780,7 @@
                     }
 
                     if (data.status === 'processing') {
-                        if (currentMode === 'mse') {
+                        if (currentMode === 'mse' && subtitleSupported) {
                             setStatus(`Đang tạo audio + subtitle live... (${data.progress || 0}/${data.total || 0})`);
                             setBadge('live');
                         } else {

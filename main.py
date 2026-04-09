@@ -4,6 +4,7 @@ import re
 import sys
 import json
 import time
+import logging
 import hashlib
 import asyncio
 import unicodedata
@@ -60,6 +61,21 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Story to Audio + Live Subtitles API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+logger = logging.getLogger("story2audio")
+
+# ---------------------------------------------------------------------------
+# Cache-ID validation (chặn path traversal)
+# ---------------------------------------------------------------------------
+_CACHE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+
+
+def validate_cache_id(cache_id: str) -> str:
+    cache_id = (cache_id or "").strip()
+    if not _CACHE_ID_RE.fullmatch(cache_id):
+        raise HTTPException(status_code=400, detail="Invalid cache id")
+    return cache_id
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -211,12 +227,15 @@ def load_cache_meta(cache_id: str) -> Optional[dict]:
         return None
 
 
-def remove_if_exists(path: str) -> None:
+def remove_if_exists(path: str) -> bool:
     if os.path.exists(path):
         try:
             os.remove(path)
-        except OSError:
-            pass
+            return True
+        except OSError as exc:
+            logger.warning("Không thể xóa file %s: %s", path, exc)
+            return False
+    return True
 
 
 def cleanup_incomplete_cache(cache_id: str) -> None:
@@ -1038,7 +1057,7 @@ async def generate_chunks(
                     words = []
 
                 if not audio:
-                    continue
+                    raise RuntimeError(f"Empty audio returned for chunk {i + 1}/{total}")
 
                 raw_for_duration = audio
                 if i > 0:
@@ -1248,6 +1267,7 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
 
 @app.get("/tts/status/{cache_id}")
 async def get_status(cache_id: str):
+    cache_id = validate_cache_id(cache_id)
     status = get_effective_status(cache_id)
     if not status:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1256,6 +1276,7 @@ async def get_status(cache_id: str):
 
 @app.get("/tts/file/{cache_id}")
 async def get_audio_file(cache_id: str, request: Request):
+    cache_id = validate_cache_id(cache_id)
     if not is_cache_valid(cache_id):
         status = get_effective_status(cache_id)
         if status and status.get("status") in {"queued", "processing"}:
@@ -1279,6 +1300,7 @@ async def get_audio_file(cache_id: str, request: Request):
 
 @app.get("/tts/subtitle/srt/{cache_id}")
 async def get_srt_file(cache_id: str):
+    cache_id = validate_cache_id(cache_id)
     meta = load_cache_meta(cache_id)
     if not meta or meta.get("engine") != "edge":
         raise HTTPException(status_code=404, detail="Subtitle not found")
@@ -1298,6 +1320,7 @@ async def get_srt_file(cache_id: str):
 
 @app.get("/tts/subtitle/vtt/{cache_id}")
 async def get_vtt_file(cache_id: str):
+    cache_id = validate_cache_id(cache_id)
     meta = load_cache_meta(cache_id)
     if not meta or meta.get("engine") != "edge":
         raise HTTPException(status_code=404, detail="Subtitle not found")
@@ -1317,6 +1340,7 @@ async def get_vtt_file(cache_id: str):
 
 @app.get("/tts/cues/{cache_id}")
 async def get_cues(cache_id: str):
+    cache_id = validate_cache_id(cache_id)
     meta = load_cache_meta(cache_id)
     if not meta or meta.get("engine") != "edge":
         return JSONResponse({"cues": [], "done": True})
@@ -1348,7 +1372,8 @@ async def get_cues(cache_id: str):
 
 
 @app.get("/tts/cues/stream/{cache_id}")
-async def stream_cues_live(cache_id: str):
+async def stream_cues_live(cache_id: str, request: Request):
+    cache_id = validate_cache_id(cache_id)
     meta = load_cache_meta(cache_id)
     if not meta or meta.get("engine") != "edge":
         async def empty():
@@ -1366,11 +1391,30 @@ async def stream_cues_live(cache_id: str):
             },
         )
 
+    # Hỗ trợ resume: đọc Last-Event-ID từ header để skip cues đã nhận
+    last_event_id = request.headers.get("Last-Event-ID")
+    resume_after_index = 0
+    if last_event_id:
+        try:
+            resume_after_index = int(last_event_id)
+        except (ValueError, TypeError):
+            pass
+
     async def event_generator() -> AsyncGenerator[str, None]:
         jsonl_path = get_cues_jsonl_path(cache_id)
         sent_offset = 0
         last_heartbeat = time.time()
         stable_completed_checks = 0
+
+        def _yield_cue(payload: dict) -> bool:
+            """Yield cue event với id field; trả True nếu cue index > resume_after_index."""
+            cue_idx = payload.get("index", 0)
+            if cue_idx <= resume_after_index:
+                return False
+            event_id = str(cue_idx)
+            data_str = json.dumps(payload, ensure_ascii=False)
+            yield f"id: {event_id}\nevent: cue\ndata: {data_str}\n\n"
+            return True
 
         while True:
             if os.path.exists(jsonl_path):
@@ -1389,7 +1433,7 @@ async def stream_cues_live(cache_id: str):
                                 payload = json.loads(line)
                             except json.JSONDecodeError:
                                 continue
-                            yield f"event: cue\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                            yield from _yield_cue(payload)
                 except OSError:
                     pass
 
@@ -1421,7 +1465,7 @@ async def stream_cues_live(cache_id: str):
                                     payload = json.loads(line)
                                 except json.JSONDecodeError:
                                     continue
-                                yield f"event: cue\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                                yield from _yield_cue(payload)
 
                             if not has_more:
                                 stable_completed_checks += 1
@@ -1457,6 +1501,7 @@ async def stream_cues_live(cache_id: str):
 
 @app.get("/tts/stream/{cache_id}")
 async def stream_audio_live(cache_id: str):
+    cache_id = validate_cache_id(cache_id)
     audio_path = get_audio_path(cache_id)
 
     # Chờ đến khi có byte đầu tiên
