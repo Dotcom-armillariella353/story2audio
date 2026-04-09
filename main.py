@@ -239,20 +239,38 @@ def remove_if_exists(path: str) -> bool:
 
 
 def cleanup_incomplete_cache(cache_id: str) -> None:
-    remove_if_exists(get_audio_path(cache_id))
-    remove_if_exists(get_meta_path(cache_id))
-    remove_if_exists(get_srt_path(cache_id))
-    remove_if_exists(get_vtt_path(cache_id))
-    remove_if_exists(get_cues_json_path(cache_id))
-    remove_if_exists(get_cues_jsonl_path(cache_id))
+    """Xóa toàn bộ file cache (audio, meta, subtitle, cues). Best-effort."""
+    paths = [
+        get_audio_path(cache_id),
+        get_meta_path(cache_id),
+        get_srt_path(cache_id),
+        get_vtt_path(cache_id),
+        get_cues_json_path(cache_id),
+        get_cues_jsonl_path(cache_id),
+    ]
+    failed = [p for p in paths if not remove_if_exists(p)]
+    if failed:
+        logger.warning(
+            "cleanup_incomplete_cache(%s): không thể xóa %d file: %s",
+            cache_id, len(failed), failed,
+        )
 
 
 def remove_runtime_files_only(cache_id: str) -> None:
-    remove_if_exists(get_audio_path(cache_id))
-    remove_if_exists(get_srt_path(cache_id))
-    remove_if_exists(get_vtt_path(cache_id))
-    remove_if_exists(get_cues_json_path(cache_id))
-    remove_if_exists(get_cues_jsonl_path(cache_id))
+    """Xóa file runtime (audio, subtitle, cues) nhưng giữ meta lại. Best-effort."""
+    paths = [
+        get_audio_path(cache_id),
+        get_srt_path(cache_id),
+        get_vtt_path(cache_id),
+        get_cues_json_path(cache_id),
+        get_cues_jsonl_path(cache_id),
+    ]
+    failed = [p for p in paths if not remove_if_exists(p)]
+    if failed:
+        logger.warning(
+            "remove_runtime_files_only(%s): không thể xóa %d file: %s",
+            cache_id, len(failed), failed,
+        )
 
 
 def is_cache_valid(cache_id: str, require_subtitles: bool = False) -> bool:
@@ -1367,8 +1385,12 @@ async def get_cues(cache_id: str):
             pass
 
     status = get_effective_status(cache_id)
-    done = bool(status and status.get("status") == "completed")
-    return {"cues": partial, "done": done}
+    if status and status.get("status") in {"completed", "failed"}:
+        result: dict = {"cues": partial, "done": True}
+        if status.get("status") == "failed":
+            result["error"] = status.get("error", "generation failed")
+        return result
+    return {"cues": partial, "done": False}
 
 
 @app.get("/tts/cues/stream/{cache_id}")
@@ -1424,7 +1446,6 @@ async def stream_cues_live(cache_id: str, request: Request):
                             line = f.readline()
                             if not line:
                                 break
-                            sent_offset = f.tell()
                             line = line.strip()
                             if not line:
                                 continue
@@ -1435,6 +1456,7 @@ async def stream_cues_live(cache_id: str, request: Request):
                             evt = _emit_cue_line(payload)
                             if evt:
                                 yield evt
+                            sent_offset = f.tell()
                 except OSError:
                     pass
 
@@ -1458,7 +1480,6 @@ async def stream_cues_live(cache_id: str, request: Request):
                                 if not line:
                                     break
                                 has_more = True
-                                sent_offset = f.tell()
                                 line = line.strip()
                                 if not line:
                                     continue
@@ -1469,6 +1490,7 @@ async def stream_cues_live(cache_id: str, request: Request):
                                 evt = _emit_cue_line(payload)
                                 if evt:
                                     yield evt
+                                sent_offset = f.tell()
 
                             if not has_more:
                                 stable_completed_checks += 1
