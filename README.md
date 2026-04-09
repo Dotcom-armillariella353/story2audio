@@ -1,213 +1,79 @@
 # Story2Audio 🎧
 
-Story2Audio là một ứng dụng API và Web Interface hiệu năng cao được viết bằng **FastAPI**, giúp chuyển đổi văn bản và truyện thành âm thanh (Text-to-Speech) chuyên nghiệp. Điểm nổi bật nhất của Story2Audio là khả năng **phát trực tiếp (Live Streaming) ngay khi âm thanh đang được tạo** kết hợp với **phụ đề trực tiếp (Live Subtitles)**, giúp người dùng vừa nghe vừa đọc theo thời gian thực mà không cần chờ toàn bộ quá trình chuyển đổi hoàn tất.
+**Miễn phí · Không giới hạn · Không cần đăng ký**
 
-## ✨ Tính năng nổi bật
+Story2Audio chuyển đổi văn bản, truyện, bài báo... thành âm thanh tự nhiên với **phụ đề trực tiếp**. Bạn có thể dán bất kỳ nội dung nào — từ một câu ngắn đến cả cuốn tiểu thuyết — và bắt đầu nghe ngay lập tức.
 
-- **Live Streaming với MediaSource:** Không còn độ trễ chờ đợi! Backend stream audio chunks dưới dạng byte và Frontend ghép nối phát ngay theo thời gian thực.
-- **Phụ đề trực tiếp (Live Subtitles):** Tự động tạo phụ đề theo từng từ (word-level) khi sử dụng Edge TTS. Phụ đề được hiển thị song song với audio trên giao diện web và cập nhật theo thời gian thực thông qua SSE (Server-Sent Events). Hỗ trợ tải về định dạng **SRT** và **WebVTT**.
-- **Đa định dạng phụ đề:** Phụ đề được xuất tự động dưới 3 định dạng:
-  - **SRT** (SubRip) — Phổ biến cho trình phát video và bộ chỉnh sửa phụ đề.
-  - **WebVTT** — Định dạng chuẩn cho web, tương thích với thẻ `<track>` của HTML5 `<video>`.
-  - **Cues JSON** — Dữ liệu cấu trúc `{start, end, text}` để tích hợp vào ứng dụng bên thứ ba.
-- **Hỗ trợ đa ngôn ngữ (Multi-language & i18n):** Hỗ trợ 7 ngôn ngữ: Tiếng Việt, Tiếng Anh, Tiếng Nhật, Tiếng Trung, Tiếng Hàn, Tiếng Pháp, Tiếng Đức. Giao diện thay đổi tức thì, hệ thống cung cấp các giọng đọc bản địa chất lượng cao tương ứng.
-- **Hệ thống Cache thông minh:** Âm thanh và phụ đề được tạo ra sẽ được lưu lại (theo mã hash của văn bản + ngôn ngữ + engine + giọng đọc). Nếu người dùng yêu cầu lại cùng văn bản đó, ứng dụng sẽ phát ngay từ cache, tiết kiệm tối đa CPU và băng thông.
-- **Giao diện hiện đại:** Bố cục card-based, bảng màu tươi mới, responsive trên mọi thiết bị. Bộ chuyển đổi ngôn ngữ tích hợp sẵn trên giao diện (client-side i18n).
-- **Bảo mật và Quản lý lỗi:** Tự động loại bỏ cache bị lỗi, có cơ chế chặn Race Condition (không xóa nhầm file đang tạo). API Stream báo lỗi 503 để Client tự retry (Retry-After). Debug API được bảo vệ bởi biến môi trường.
-- **Tùy chọn Engine mạnh mẽ:**
-  - **Edge-TTS:** Engine chính với giọng đọc tự nhiên chuẩn Neural, hỗ trợ phụ đề trực tiếp (word boundary), đa dạng giọng điệu cho từng quốc gia.
-  - **Google TTS (gTTS):** Hoạt động ổn định như phương án dự phòng (không hỗ trợ phụ đề).
+> 🌐 **Demo trực tiếp:** [story2audio.hoctuthien.com](https://story2audio.hoctuthien.com)
 
-## 📁 Cấu trúc dự án
+## ✨ Tại sao nên dùng Story2Audio?
 
-```text
-story2audio/
-├─ audio_cache/              # (Tự sinh) Thư mục lưu trữ file .mp3, .srt, .vtt, .cues.json, .cues.jsonl và .json (metadata)
-├─ static/
-│  └─ favicon.svg            # Icon ứng dụng
-├─ templates/
-│  └─ index.html             # Giao diện người dùng duy nhất (Single Page) — tích hợp player + phụ đề
-├─ main.py                   # Chứa toàn bộ logic FastAPI, API routing, TTS Generator và Subtitle Engine
-├─ pyproject.toml / uv.lock  # Quản lý dependency dự án
-├─ Dockerfile                # File build Docker container
-├─ docker-compose.yml        # Triển khai dễ dàng bằng Compose
-├─ .env.example              # File biến môi trường mẫu
-├─ LICENSE                   # Giấy phép MIT
-├─ CONTRIBUTING.md           # Hướng dẫn đóng góp
-└─ RELEASE_NOTES.md          # Lịch sử phát hành
-```
+- 🆓 **Hoàn toàn miễn phí** — Sử dụng công nghệ Edge TTS của Microsoft, không tốn phí, không cần API key.
+- 📝 **Không giới hạn độ dài văn bản** — Dán một câu hay cả cuốn tiểu thuyết đều được. Văn bản dài sẽ được chia nhỏ tự động.
+- 🎧 **Nghe ngay lập tức** — Âm thanh được phát theo thời gian thực (live streaming) ngay khi đang tạo, không cần chờ hoàn tất.
+- 📜 **Phụ đề trực tiếp (Live Subtitles)** — Phụ đề hiện song song với audio, cập nhật từng câu theo thời gian thực. Hỗ trợ tải về định dạng SRT và WebVTT.
+- 🌍 **Đa ngôn ngữ** — Hỗ trợ 7 ngôn ngữ với giọng đọc bản địa chất lượng cao: Tiếng Việt, Anh, Nhật, Trung, Hàn, Pháp, Đức.
+- 🎙️ **Nhiều giọng đọc** — Hàng chục giọng đọc Neural tự nhiên cho mỗi ngôn ngữ (nam, nữ, trẻ em...).
+- 💾 **Tải về dễ dàng** — Tải file MP3, file phụ đề SRT và WebVTT chỉ bằng một cú click.
+- ⚡ **Lưu cache thông minh** — Văn bản đã chuyển đổi sẽ được lưu lại, lần sau mở lại là phát ngay không cần tạo lại.
+- 🐳 **Dễ dàng tự host** — Hỗ trợ Docker, Docker Compose, triển khai trên Coolify, Railway, VPS...
 
-## 🛠 Cài đặt và Chạy ứng dụng
+## 🚀 Sử dụng
 
-Bạn có thể chạy dự án trực tiếp (Local) hoặc thông qua Docker.
+### Trực tuyến
+Truy cập [story2audio.hoctuthien.com](https://story2audio.hoctuthien.com), dán văn bản, chọn ngôn ngữ và giọng đọc, rồi bấm **Chuyển thành audio**.
 
-### Cách 1: Sử dụng `uv` (Khuyến nghị, siêu tốc)
+### Tự host (Self-host)
 
-1. Cài đặt các gói phụ thuộc:
-   ```bash
-   uv sync
-   ```
-2. Chạy server (hỗ trợ tự động tải lại khi sửa code):
-   ```bash
-   uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-   ```
-
-### Cách 2: Sử dụng `pip` truyền thống
-
-1. Khởi tạo môi trường ảo (Virtual Env) và kích hoạt:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Trên Linux/macOS
-   # hoặc: .venv\Scripts\activate trên Windows
-   ```
-2. Cài đặt thư viện:
-   ```bash
-   pip install -U pip
-   pip install fastapi edge-tts gtts python-dotenv "uvicorn[standard]"
-   ```
-3. Chạy server:
-   ```bash
-   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-   ```
-
-> Truy cập giao diện ứng dụng tại: **http://localhost:8000**
-
----
-
-## 🐳 Triển khai với Docker & Coolify
-
-Ứng dụng Story2Audio được tối ưu sẵn cho môi trường Container (Docker/Coolify).
-
-### Chạy bằng Docker Compose (Dễ nhất)
-Chỉ cần chạy lệnh sau tại thư mục gốc của dự án:
+**Docker Compose (Khuyến nghị):**
 ```bash
+git clone https://github.com/dvchd/story2audio.git
+cd story2audio
 docker compose up -d --build
 ```
+Truy cập `http://localhost:8000` để sử dụng.
 
-### Triển khai trên Coolify
-1. Thêm dự án từ GitHub/GitLab vào Coolify.
-2. Chọn loại ứng dụng là **Docker Compose**.
-3. Cấu hình biến môi trường tại thẻ **Environment Variables** (nếu cần thiết).
-4. Nhấn **Deploy**. Hệ thống sẽ tự động map port và mount thư mục `audio_cache` thông qua volume.
+**Cài đặt thủ công:**
+```bash
+# Cài đặt dependency
+pip install fastapi edge-tts gtts python-dotenv "uvicorn[standard]"
 
----
+# Chạy server
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
-## ⚙️ Cấu hình Biến môi trường (.env)
+### Tùy chỉnh
 
-Tạo một file `.env` (dựa trên `.env.example`) tại thư mục gốc để tuỳ biến cấu hình ứng dụng:
+Tạo file `.env` tại thư mục gốc (xem `.env.example`) để cấu hình:
 
 ```env
-# Cấu hình Proxy nếu máy chủ bị chặn truy cập Edge TTS
-PROXY=http://user:password@proxy-host:8080
-
-# Cấu hình cổng và host cho Uvicorn (Mặc định 0.0.0.0 và 8000)
+PROXY=http://user:password@proxy-host:8080   # Proxy nếu cần
 HOST=0.0.0.0
 PORT=8000
-
-# Bật Debug mode (cho phép xem API chia nhỏ Chunk văn bản) - Không dùng trên Production
-ENABLE_DEBUG_TTS=false
+ENABLE_DEBUG_TTS=false                          # Bật debug trên production
 ```
 
 ---
 
-## 📡 Tài liệu API Endpoints
+## 🛠 Cho nhà phát triển
 
-### Core Endpoints
-
-| Phương thức | Endpoint | Mô tả |
-|:---:|---|---|
-| `GET` | `/` | Giao diện Web chính |
-| `GET` | `/health` | Kiểm tra trạng thái hệ thống |
-| `GET` | `/tts/voices` | Danh sách giọng đọc theo ngôn ngữ |
-
-### TTS Endpoints
-
-| Phương thức | Endpoint | Mô tả |
-|:---:|---|---|
-| `POST` | `/tts/start` | Bắt đầu chuyển đổi văn bản thành audio. Nhận JSON `{text, language, voice, engine}`. Trả về `cache_id` và trạng thái. |
-| `GET` | `/tts/status/{cache_id}` | Trạng thái chuyển đổi hiện tại (queued / processing / completed / failed). |
-| `GET` | `/tts/file/{cache_id}` | Tải file audio MP3 hoàn chỉnh (chỉ khi đã tạo xong). |
-| `GET` | `/tts/stream/{cache_id}` | Stream audio trực tiếp theo thời gian thực (chunked transfer). Dùng cho MediaSource API trên Frontend. |
-| `POST` | `/tts/debug/chunks` | (Chỉ khi `ENABLE_DEBUG_TTS=true`) Xem kết quả chia nhỏ văn bản thành các chunk. |
-
-### Subtitle Endpoints (Phiên bản 3.0+)
-
-> Tính năng phụ đề chỉ hoạt động khi sử dụng **Edge TTS** engine.
-
-| Phương thức | Endpoint | Mô tả |
-|:---:|---|---|
-| `GET` | `/tts/subtitle/srt/{cache_id}` | Tải file phụ đề định dạng **SRT** (SubRip). Trả về 404 nếu dùng gTTS hoặc phụ đề chưa sẵn sàng. |
-| `GET` | `/tts/subtitle/vtt/{cache_id}` | Tải file phụ đề định dạng **WebVTT**. Tương thích với HTML5 `<video>` và các trình phát web. |
-| `GET` | `/tts/cues/{cache_id}` | Lấy danh sách cues dưới dạng JSON `{cues: [{start, end, text}], done: bool}`. Trả về partial cues khi đang tạo, full cues khi hoàn tất. |
-| `GET` | `/tts/cues/stream/{cache_id}` | **SSE (Server-Sent Events)** stream cues trực tiếp theo thời gian thực. Frontend nhận từng cue ngay khi được tạo, bao gồm các event type: `cue` (dữ liệu phụ đề mới), `complete` (hoàn tất), `error` (lỗi). |
-
-### Ví dụ Response `/tts/start`
-
-```json
-{
-  "cache_id": "a1b2c3d4e5f6",
-  "status": "started",
-  "estimated_chunks": 5,
-  "subtitle_supported": true,
-  "subtitle_ready": false
-}
+### Cài đặt với `uv` (Khuyến nghị)
+```bash
+uv sync
+uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Ví dụ SSE Event `/tts/cues/stream/{cache_id}`
+### API
+Ứng dụng cung cấp REST API đầy đủ. Xem tài liệu API tự động tại `/docs` (Swagger UI) sau khi chạy server.
 
-```
-event: cue
-data: {"index": 1, "start": 0.0, "end": 1.52, "text": "Ngày xửa ngày xưa,"}
-
-event: cue
-data: {"index": 2, "start": 1.52, "end": 3.18, "text": "có một cô bé ở làng ven núi."}
-
-event: complete
-data: {"done": true}
-```
+### Triển khai trên Coolify
+1. Thêm dự án từ GitHub vào Coolify.
+2. Chọn loại **Docker Compose**.
+3. Cấu hình biến môi trường (nếu cần).
+4. Nhấn **Deploy**.
 
 ---
 
-## 📜 Luồng hoạt động (Workflow) của ứng dụng
+## 📄 Giấy phép
 
-1. **Client gửi văn bản:** Người dùng nhập truyện và chọn tuỳ chọn trên Web (Ngôn ngữ, Giọng, Engine) → Bấm Chuyển đổi.
-2. **Backend tiếp nhận (`POST /tts/start`):**
-   - Phân tích và chia nhỏ văn bản (Chunking) dựa theo quy tắc ngắt câu của từng ngôn ngữ.
-   - Hash nội dung để sinh ra `cache_id` duy nhất.
-   - Nếu audio và phụ đề đã tồn tại (cached), trả về URL ngay lập tức.
-   - Nếu chưa có, đưa vào hàng đợi chạy ngầm (Background Task) và trả về trạng thái `started` + `cache_id`.
-3. **Quá trình tạo Audio & Phụ đề (`generate_chunks`):**
-   - Xử lý từng đoạn văn bản, gọi API Edge-TTS hoặc gTTS.
-   - Với Edge TTS: thu thập dữ liệu `WordBoundary` / `SentenceBoundary` (thời gian bắt đầu, kết thúc, nội dung từng từ).
-   - Gom các word boundary thành **cue** có ý nghĩa (mỗi cue chứa một cụm từ hoàn chỉnh) và ghi追加 vào file `.cues.jsonl`.
-   - Tính toán thời lượng MP3 của từng chunk để căn chỉnh thời gian phụ đề chính xác.
-   - Ghi nối tiếp audio vào file `.mp3`, ghi cues incremental vào `.cues.jsonl`.
-   - Trừ chunk đầu tiên, các chunk tiếp theo bị cắt header `ID3v2` để loại bỏ nhiễu khi ghép nối.
-4. **Client nhận Audio (`/tts/stream/{cache_id}`):**
-   - Trình duyệt liên tục yêu cầu file thông qua Live Stream chunk.
-   - Sử dụng `MediaSource API` trên Javascript để ghép nối và phát trực tiếp đoạn MP3 vừa được tải về (tải đến đâu, phát đến đó).
-5. **Client nhận Phụ đề trực tiếp (`/tts/cues/stream/{cache_id}`):**
-   - Frontend mở kết nối SSE và nhận từng cue ngay khi được tạo.
-   - Phụ đề được hiển thị song song trên giao diện, tự động cuộn và bôi sáng theo tiến độ audio.
-6. **Hoàn thành:** Tạo file phụ đề cuối cùng (`.srt`, `.vtt`, `.cues.json`). Cập nhật Metadata cache. Người dùng có thể nhấn nút "Tải MP3" hoặc "Tải phụ đề" để lưu file.
-
----
-
-## 🗂 Cache & File Formats
-
-Mỗi lần chuyển đổi tạo ra các file được lưu trong thư mục `audio_cache/`, định danh bởi `cache_id`:
-
-| File | Định dạng | Mô tả |
-|---|---|---|
-| `{cache_id}.mp3` | Audio | File audio MP3 hoàn chỉnh |
-| `{cache_id}.json` | JSON Metadata | Thông tin cache: trạng thái, kích thước file, engine, ngôn ngữ, giọng đọc, thông tin phụ đề |
-| `{cache_id}.srt` | SRT Subtitle | File phụ đề định dạng SubRitp (chỉ Edge TTS) |
-| `{cache_id}.vtt` | WebVTT Subtitle | File phụ đề định dạng WebVTT (chỉ Edge TTS) |
-| `{cache_id}.cues.json` | JSON Array | Danh sách cues hoàn chỉnh `[{start, end, text, index}]` (chỉ Edge TTS) |
-| `{cache_id}.cues.jsonl` | JSONL | File cues ghi theo từng dòng, dùng cho streaming incremental (chỉ Edge TTS) |
-
-> **Lưu ý:** File `.cues.jsonl` là file tạm dùng trong quá trình tạo. Sau khi hoàn tất, dữ liệu được gom đầy đủ vào `.cues.json`, `.srt` và `.vtt`.
-
----
-
-**Giấy phép (License):** MIT
+MIT — Sử dụng tự do cho mục đích cá nhân và thương mại.
