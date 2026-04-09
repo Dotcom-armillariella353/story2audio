@@ -1,16 +1,17 @@
 import os
 import io
-import json
-import hashlib
-import asyncio
 import re
 import sys
+import json
 import time
+import hashlib
+import asyncio
 import unicodedata
+from datetime import timedelta
 from typing import List, Dict, AsyncGenerator, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -43,7 +44,7 @@ if sys.platform == "win32":
 # ---------------------------------------------------------------------------
 # Directories & Setup
 # ---------------------------------------------------------------------------
-VERSION = os.environ.get("APP_VERSION", "v2.0.2")
+VERSION = os.environ.get("APP_VERSION", "v3.0.0")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -57,7 +58,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Story to Audio Streaming & Caching API")
+app = FastAPI(title="Story to Audio + Live Subtitles API")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ---------------------------------------------------------------------------
@@ -70,7 +71,6 @@ if PROXY:
     os.environ["HTTP_PROXY"] = PROXY
     os.environ["HTTPS_PROXY"] = PROXY
 
-# In-memory runtime status (best effort)
 generation_status: Dict[str, dict] = {}
 _generation_locks: Dict[str, asyncio.Lock] = {}
 
@@ -130,33 +130,21 @@ CJK_LANGUAGES = {"ja", "zh", "ko"}
 # ---------------------------------------------------------------------------
 # Chunking profiles
 # ---------------------------------------------------------------------------
-# Default profile for languages with spaces (vi/en/fr/de, etc.)
-# We start with a very small first chunk (1 sentence / 100 chars) for ultra-fast time-to-first-byte
-# then ramp up to avoid having too many chunks overall.
 DEFAULT_CHUNK_SIZES = [120, 300, 600, 1500, 3500]
 DEFAULT_HARD_MAX_CHUNK = 3500
-# Tăng số câu ở chunk 1 và 2 lên để phòng trường hợp các câu đều rất ngắn
-# [1, 2, 4, 12, 50] -> [2, 4, 8, 15, 50]
 DEFAULT_MAX_SENTENCES_PER_CHUNK = [2, 4, 8, 15, 50]
 
-# Smaller, more conservative profile for CJK
 CJK_CHUNK_SIZES = [60, 150, 300, 800, 2000]
 CJK_HARD_MAX_CHUNK = 2000
 CJK_MAX_SENTENCES_PER_CHUNK = [2, 4, 8, 12, 30]
 
-# Sentence regex:
-# - Supports . ! ? … 。 ！ ？
-# - Allows closing quotes/brackets after sentence end
 MULTILANG_SENTENCE_RE = re.compile(
-    r'.+?(?:[.!?…。！？]+(?:["\'”’»」』）】]*)|$)',
+    r".+?(?:[.!?…。！？]+(?:[\"'”’»」』）】]*)|$)",
     re.S,
 )
-
-# Paragraph split: blank lines are strong boundaries
 PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n+", re.M)
-
-# Soft clause separators
 SOFT_SPLIT_RE = re.compile(r"(?<=[,;:，、；：])")
+SENTENCE_END_RE = re.compile(r"[.!?…。！？][\"'”’»」』）】]*$")
 
 # ---------------------------------------------------------------------------
 # Pydantic
@@ -176,9 +164,6 @@ def md5_short(text: str) -> str:
 
 
 def get_cache_id(text: str, voice: str, engine: str, language: str) -> str:
-    """
-    Include language in cache_id to avoid collisions, especially for gTTS.
-    """
     raw = f"{text}_{voice}_{engine}_{language}"
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
@@ -189,6 +174,22 @@ def get_audio_path(cache_id: str) -> str:
 
 def get_meta_path(cache_id: str) -> str:
     return os.path.join(CACHE_DIR, f"{cache_id}.json")
+
+
+def get_srt_path(cache_id: str) -> str:
+    return os.path.join(CACHE_DIR, f"{cache_id}.srt")
+
+
+def get_vtt_path(cache_id: str) -> str:
+    return os.path.join(CACHE_DIR, f"{cache_id}.vtt")
+
+
+def get_cues_json_path(cache_id: str) -> str:
+    return os.path.join(CACHE_DIR, f"{cache_id}.cues.json")
+
+
+def get_cues_jsonl_path(cache_id: str) -> str:
+    return os.path.join(CACHE_DIR, f"{cache_id}.cues.jsonl")
 
 
 def save_cache_meta(cache_id: str, data: dict) -> None:
@@ -210,17 +211,7 @@ def load_cache_meta(cache_id: str) -> Optional[dict]:
         return None
 
 
-def remove_audio_file(cache_id: str) -> None:
-    path = get_audio_path(cache_id)
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
-def remove_meta_file(cache_id: str) -> None:
-    path = get_meta_path(cache_id)
+def remove_if_exists(path: str) -> None:
     if os.path.exists(path):
         try:
             os.remove(path)
@@ -229,20 +220,29 @@ def remove_meta_file(cache_id: str) -> None:
 
 
 def cleanup_incomplete_cache(cache_id: str) -> None:
-    remove_audio_file(cache_id)
-    remove_meta_file(cache_id)
+    remove_if_exists(get_audio_path(cache_id))
+    remove_if_exists(get_meta_path(cache_id))
+    remove_if_exists(get_srt_path(cache_id))
+    remove_if_exists(get_vtt_path(cache_id))
+    remove_if_exists(get_cues_json_path(cache_id))
+    remove_if_exists(get_cues_jsonl_path(cache_id))
 
 
-def is_cache_valid(cache_id: str) -> bool:
+def remove_runtime_files_only(cache_id: str) -> None:
+    remove_if_exists(get_audio_path(cache_id))
+    remove_if_exists(get_srt_path(cache_id))
+    remove_if_exists(get_vtt_path(cache_id))
+    remove_if_exists(get_cues_json_path(cache_id))
+    remove_if_exists(get_cues_jsonl_path(cache_id))
+
+
+def is_cache_valid(cache_id: str, require_subtitles: bool = False) -> bool:
     audio_path = get_audio_path(cache_id)
     if not os.path.exists(audio_path):
         return False
 
     meta = load_cache_meta(cache_id)
-    if not meta:
-        return False
-
-    if meta.get("status") != "completed":
+    if not meta or meta.get("status") != "completed":
         return False
 
     expected_size = meta.get("file_size")
@@ -254,19 +254,24 @@ def is_cache_valid(cache_id: str) -> bool:
     except OSError:
         return False
 
-    return actual_size > 0 and actual_size == expected_size
+    if actual_size <= 0 or actual_size != expected_size:
+        return False
+
+    if require_subtitles and meta.get("engine") == "edge":
+        if not (
+            os.path.exists(get_srt_path(cache_id))
+            and os.path.exists(get_vtt_path(cache_id))
+            and os.path.exists(get_cues_json_path(cache_id))
+        ):
+            return False
+
+    return True
 
 
 def get_effective_status(cache_id: str) -> Optional[dict]:
-    """
-    Return current status: in-memory only for active (queued/processing) jobs,
-    disk metadata for terminal (completed/failed) states.
-    """
     audio_path = get_audio_path(cache_id)
     file_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
 
-    # Only use in-memory state for active jobs; terminal states are persisted to disk
-    # and removed from generation_status to avoid returning stale data.
     in_mem = generation_status.get(cache_id)
     if in_mem and in_mem.get("status") in {"queued", "processing"}:
         status = dict(in_mem)
@@ -291,9 +296,6 @@ def get_effective_status(cache_id: str) -> Optional[dict]:
 
 
 def strip_id3v2(data: bytes) -> bytes:
-    """
-    Remove ID3v2 header so concatenated MP3 frames are cleaner.
-    """
     if len(data) >= 10 and data[:3] == b"ID3":
         size = (
             ((data[6] & 0x7F) << 21)
@@ -306,35 +308,23 @@ def strip_id3v2(data: bytes) -> bytes:
 
 
 def normalize_text(text: str) -> str:
-    """
-    Normalize line endings and trim outer whitespace.
-    Do not aggressively NFKC-normalize content to avoid altering TTS reading.
-    """
-    text = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    return text
+    return (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def is_cjk_script_char(ch: str) -> bool:
     code = ord(ch)
     return (
-        0x4E00 <= code <= 0x9FFF      # CJK Unified Ideographs
-        or 0x3400 <= code <= 0x4DBF   # CJK Extension A
-        or 0x3040 <= code <= 0x309F   # Hiragana
-        or 0x30A0 <= code <= 0x30FF   # Katakana
-        or 0xFF66 <= code <= 0xFF9D   # Halfwidth Katakana
-        or 0xAC00 <= code <= 0xD7AF   # Hangul Syllables
-        or 0x1100 <= code <= 0x11FF   # Hangul Jamo
+        0x4E00 <= code <= 0x9FFF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x3040 <= code <= 0x309F
+        or 0x30A0 <= code <= 0x30FF
+        or 0xFF66 <= code <= 0xFF9D
+        or 0xAC00 <= code <= 0xD7AF
+        or 0x1100 <= code <= 0x11FF
     )
 
 
 def char_weight(ch: str) -> int:
-    """
-    Weighted length for chunking:
-    - newline: 0
-    - other whitespace: 1
-    - full-width / wide / CJK-like chars: 2
-    - others: 1
-    """
     if ch in "\r\n":
         return 0
     if ch.isspace():
@@ -343,7 +333,6 @@ def char_weight(ch: str) -> int:
     east = unicodedata.east_asian_width(ch)
     if east in {"W", "F"} or is_cjk_script_char(ch):
         return 2
-
     return 1
 
 
@@ -364,32 +353,22 @@ def is_mostly_cjk(text: str, threshold: float = 0.25) -> bool:
 
 
 def get_chunk_profile(language: str, text: str) -> Tuple[List[int], int, List[int]]:
-    """
-    Choose chunk profile by explicit language first, then fallback to script detection.
-    """
     if is_cjk_language(language) or is_mostly_cjk(text):
         return CJK_CHUNK_SIZES, CJK_HARD_MAX_CHUNK, CJK_MAX_SENTENCES_PER_CHUNK
     return DEFAULT_CHUNK_SIZES, DEFAULT_HARD_MAX_CHUNK, DEFAULT_MAX_SENTENCES_PER_CHUNK
 
 
 def smart_join(left: str, right: str) -> str:
-    """
-    Join two text pieces without forcing a space for CJK languages.
-    """
     left = (left or "").strip()
     right = (right or "").strip()
-
     if not left:
         return right
     if not right:
         return left
-
     if left[-1].isspace() or right[0].isspace():
         return left + right
-
     if is_cjk_script_char(left[-1]) or is_cjk_script_char(right[0]):
         return left + right
-
     return f"{left} {right}"
 
 
@@ -401,29 +380,15 @@ def split_paragraphs(text: str) -> List[str]:
 
 
 def split_sentences_multilang(text: str) -> List[str]:
-    """
-    Multilingual sentence splitter:
-    - Does not rely on spaces after punctuation
-    - Supports . ! ? … 。 ！ ？
-    """
     text = normalize_text(text)
     if not text:
         return []
-
     matches = [m.group().strip() for m in MULTILANG_SENTENCE_RE.finditer(text)]
     sentences = [s for s in matches if s]
-
-    if not sentences:
-        return [text]
-
-    return sentences
+    return sentences or [text]
 
 
 def hard_cut_text(text: str, limit: int) -> List[str]:
-    """
-    Hard cut by effective length, guaranteed each piece <= limit
-    (except extremely pathological cases of single char weight > limit, which won't happen here).
-    """
     text = (text or "").strip()
     if not text:
         return []
@@ -453,9 +418,6 @@ def hard_cut_text(text: str, limit: int) -> List[str]:
 
 
 def pack_units_by_limit(units: List[str], limit: int) -> List[str]:
-    """
-    Greedily pack text units into chunks using effective_len().
-    """
     chunks: List[str] = []
     current = ""
 
@@ -488,7 +450,6 @@ def pack_units_by_limit(units: List[str], limit: int) -> List[str]:
 
     if current.strip():
         chunks.append(current.strip())
-
     return chunks
 
 
@@ -496,11 +457,9 @@ def split_long_text_gently_by_space(text: str, limit: int) -> List[str]:
     text = (text or "").strip()
     if not text:
         return []
-
     if effective_len(text) <= limit:
         return [text]
 
-    # Keep trailing spaces with the token when possible
     tokens = re.findall(r"\S+\s*", text)
     if not tokens:
         return hard_cut_text(text, limit)
@@ -537,25 +496,16 @@ def split_long_text_gently_by_space(text: str, limit: int) -> List[str]:
 
     if current.strip():
         chunks.append(current.strip())
-
     return chunks
 
 
 def split_long_text_gently(text: str, limit: int) -> List[str]:
-    """
-    Split long text by priority:
-    1) soft punctuation (comma/semicolon/colon in multiple languages)
-    2) whitespace
-    3) hard cut by weighted length
-    """
     text = (text or "").strip()
     if not text:
         return []
-
     if effective_len(text) <= limit:
         return [text]
 
-    # Step 1: split by clause delimiters
     parts = [p.strip() for p in SOFT_SPLIT_RE.split(text) if p.strip()]
     if len(parts) > 1:
         packed = pack_units_by_limit(parts, limit)
@@ -567,7 +517,6 @@ def split_long_text_gently(text: str, limit: int) -> List[str]:
                 final_chunks.extend(split_long_text_gently_by_space(ch, limit))
         return [c for c in final_chunks if c]
 
-    # Step 2: split by whitespace
     by_space = split_long_text_gently_by_space(text, limit)
     final_chunks: List[str] = []
     for ch in by_space:
@@ -575,20 +524,10 @@ def split_long_text_gently(text: str, limit: int) -> List[str]:
             final_chunks.append(ch)
         else:
             final_chunks.extend(hard_cut_text(ch, limit))
-
     return [c for c in final_chunks if c]
 
 
 def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
-    """
-    Language-aware chunking:
-    - Splits paragraphs and preserves double newlines ('\n\n') as soft boundaries.
-      State persists across paragraphs to merge them efficiently and reduce total chunks.
-    - Uses weighted length for CJK processing.
-    - Uses a specific chunk profile for ja/zh/ko.
-    - Progressively limits sentence count per chunk (very small initial
-      chunk for instant streaming, then scales up to a larger maximum).
-    """
     text = normalize_text(text)
     if not text:
         return []
@@ -600,7 +539,6 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
 
     chunks: List[str] = []
     size_idx = 0
-    # State persists across paragraphs to allow merging short paragraphs into a single chunk
     current = ""
     sentence_count = 0
 
@@ -615,9 +553,6 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
                 normalized_units.extend(split_long_text_gently(sentence, hard_max))
             else:
                 normalized_units.append(sentence)
-
-        if not normalized_units:
-            continue
 
         for unit_idx, unit in enumerate(normalized_units):
             max_len = chunk_sizes[min(size_idx, len(chunk_sizes) - 1)]
@@ -637,27 +572,20 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
                             size_idx += 1
                             current = rest
                             sentence_count = 1
-                    else:
-                        current = ""
-                        sentence_count = 0
                 continue
 
-            # Paragraph boundary join: Always use double newline when merging separate
-            # paragraphs into the same chunk to preserve the natural TTS pause.
             if unit_idx == 0:
                 candidate = current + "\n\n" + unit
             else:
                 candidate = smart_join(current, unit)
 
             candidate_sentences = sentence_count + 1
-
             if effective_len(candidate) <= max_len and candidate_sentences <= max_sentences:
                 current = candidate
                 sentence_count = candidate_sentences
             else:
                 chunks.append(current.strip())
                 size_idx += 1
-
                 max_len = chunk_sizes[min(size_idx, len(chunk_sizes) - 1)]
                 if effective_len(unit) <= max_len:
                     current = unit
@@ -672,13 +600,9 @@ def split_text_into_chunks(text: str, language: str = "vi") -> List[str]:
                             size_idx += 1
                             current = rest
                             sentence_count = 1
-                    else:
-                        current = ""
-                        sentence_count = 0
 
     if current.strip():
         chunks.append(current.strip())
-
     return [c for c in chunks if c.strip()]
 
 
@@ -718,22 +642,288 @@ def validate_voice(language: str, voice: str, engine: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Subtitle helpers
+# ---------------------------------------------------------------------------
+def ticks_to_seconds(ticks: int) -> float:
+    return max(0.0, float(ticks) / 10_000_000.0)
+
+
+def smart_join_tokens(parts: List[str]) -> str:
+    out = ""
+    for part in parts:
+        token = (part or "").strip()
+        if not token:
+            continue
+        out = smart_join(out, token) if out else token
+    return out.strip()
+
+
+def group_word_boundaries_to_cues(
+    word_boundaries: List[dict],
+    base_offset_sec: float,
+    language: str,
+) -> List[dict]:
+    """
+    Gom WordBoundary thành cue dễ đọc hơn:
+    - Latin: tối đa 8 từ / cue
+    - CJK: tối đa 12 token / cue
+    - ngắt khi gặp dấu kết câu hoặc quá dài
+    """
+    if not word_boundaries:
+        return []
+
+    is_cjk = is_cjk_language(language)
+    max_words = 12 if is_cjk else 8
+    max_duration = 3.8 if is_cjk else 4.2
+
+    cues: List[dict] = []
+    current_words: List[dict] = []
+
+    def flush_current() -> None:
+        nonlocal current_words, cues
+        if not current_words:
+            return
+
+        start = base_offset_sec + current_words[0]["start"]
+        end = base_offset_sec + current_words[-1]["end"]
+        text = smart_join_tokens([w["text"] for w in current_words])
+
+        if text:
+            end = max(end, start + 0.08)
+            cues.append({
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "text": text,
+            })
+        current_words = []
+
+    for word in word_boundaries:
+        current_words.append(word)
+
+        cue_start = current_words[0]["start"]
+        cue_end = current_words[-1]["end"]
+        duration = cue_end - cue_start
+        token = (word.get("text") or "").strip()
+        sentence_end = bool(token and SENTENCE_END_RE.search(token))
+
+        if len(current_words) >= max_words or duration >= max_duration or sentence_end:
+            flush_current()
+
+    flush_current()
+    return cues
+
+
+def format_srt_time(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    total_ms = int(round(seconds * 1000))
+    hours = total_ms // 3600000
+    minutes = (total_ms % 3600000) // 60000
+    secs = (total_ms % 60000) // 1000
+    millis = total_ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def format_vtt_time(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    total_ms = int(round(seconds * 1000))
+    hours = total_ms // 3600000
+    minutes = (total_ms % 3600000) // 60000
+    secs = (total_ms % 60000) // 1000
+    millis = total_ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def cues_to_srt(cues: List[dict]) -> str:
+    lines: List[str] = []
+    for idx, cue in enumerate(cues, start=1):
+        lines.append(str(idx))
+        lines.append(f"{format_srt_time(cue['start'])} --> {format_srt_time(cue['end'])}")
+        lines.append(cue["text"])
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def cues_to_vtt(cues: List[dict]) -> str:
+    lines: List[str] = ["WEBVTT", ""]
+    for cue in cues:
+        lines.append(f"{format_vtt_time(cue['start'])} --> {format_vtt_time(cue['end'])}")
+        lines.append(cue["text"])
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def write_json_atomic(path: str, data: object) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def write_text_atomic(path: str, text: str) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def append_cues_jsonl(cache_id: str, cues: List[dict]) -> None:
+    if not cues:
+        return
+    path = get_cues_jsonl_path(cache_id)
+    with open(path, "a", encoding="utf-8") as f:
+        for cue in cues:
+            f.write(json.dumps(cue, ensure_ascii=False) + "\n")
+
+
+def load_cues_json(cache_id: str) -> List[dict]:
+    path = get_cues_json_path(cache_id)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+# ---------------------------------------------------------------------------
+# MP3 duration helper
+# Dùng để cộng global time offset giữa các chunk cho subtitle.
+# ---------------------------------------------------------------------------
+BITRATES = {
+    (3, 1): [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
+    (3, 2): [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0],
+    (3, 3): [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
+    (2, 1): [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0],
+    (2, 2): [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+    (2, 3): [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+    (0, 1): [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0],
+    (0, 2): [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+    (0, 3): [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+}
+SAMPLE_RATES = {
+    3: [44100, 48000, 32000, 0],
+    2: [22050, 24000, 16000, 0],
+    0: [11025, 12000, 8000, 0],
+}
+
+
+def skip_id3v2_len(data: bytes) -> int:
+    if len(data) >= 10 and data[:3] == b"ID3":
+        size = (
+            ((data[6] & 0x7F) << 21)
+            | ((data[7] & 0x7F) << 14)
+            | ((data[8] & 0x7F) << 7)
+            | (data[9] & 0x7F)
+        )
+        return size + 10
+    return 0
+
+
+def mp3_duration_seconds(data: bytes) -> float:
+    if not data:
+        return 0.0
+
+    pos = skip_id3v2_len(data)
+    total = 0.0
+    data_len = len(data)
+
+    while pos + 4 <= data_len:
+        b1, b2, b3, b4 = data[pos], data[pos + 1], data[pos + 2], data[pos + 3]
+        if b1 != 0xFF or (b2 & 0xE0) != 0xE0:
+            pos += 1
+            continue
+
+        version_bits = (b2 >> 3) & 0x03
+        layer_bits = (b2 >> 1) & 0x03
+        bitrate_idx = (b3 >> 4) & 0x0F
+        sample_rate_idx = (b3 >> 2) & 0x03
+        padding = (b3 >> 1) & 0x01
+
+        if version_bits == 1 or layer_bits == 0 or bitrate_idx in {0, 15} or sample_rate_idx == 3:
+            pos += 1
+            continue
+
+        version_map = {0: 0, 2: 2, 3: 3}
+        version = version_map.get(version_bits)
+        layer = 4 - layer_bits
+        if version is None:
+            pos += 1
+            continue
+
+        bitrate_table = BITRATES.get((version, layer))
+        sample_rates = SAMPLE_RATES.get(version)
+        if not bitrate_table or not sample_rates:
+            pos += 1
+            continue
+
+        bitrate_kbps = bitrate_table[bitrate_idx]
+        sample_rate = sample_rates[sample_rate_idx]
+        if bitrate_kbps <= 0 or sample_rate <= 0:
+            pos += 1
+            continue
+
+        if layer == 1:
+            samples_per_frame = 384
+            frame_length = int((12 * bitrate_kbps * 1000 / sample_rate + padding) * 4)
+        elif layer == 2:
+            samples_per_frame = 1152
+            frame_length = int(144 * bitrate_kbps * 1000 / sample_rate + padding)
+        else:
+            if version == 3:
+                samples_per_frame = 1152
+                frame_length = int(144 * bitrate_kbps * 1000 / sample_rate + padding)
+            else:
+                samples_per_frame = 576
+                frame_length = int(72 * bitrate_kbps * 1000 / sample_rate + padding)
+
+        if frame_length <= 0:
+            pos += 1
+            continue
+
+        total += samples_per_frame / sample_rate
+        pos += frame_length
+
+    return round(total, 6)
+
+
+# ---------------------------------------------------------------------------
 # Audio engine helpers
 # ---------------------------------------------------------------------------
-async def edge_tts_to_bytes(text: str, voice: str) -> bytes:
+async def edge_tts_to_audio_and_words(text: str, voice: str) -> Tuple[bytes, List[dict]]:
+    """
+    Trả về:
+    - audio bytes
+    - danh sách WordBoundary / SentenceBoundary đã chuẩn hóa thành start/end/text
+    """
     communicate = edge_tts.Communicate(text, voice, proxy=PROXY)
-    parts: List[bytes] = []
+    audio_parts: List[bytes] = []
+    words: List[dict] = []
+
     async for chunk in communicate.stream():
-        if chunk.get("type") == "audio":
-            parts.append(chunk["data"])
-    return b"".join(parts)
+        chunk_type = chunk.get("type")
+        if chunk_type == "audio":
+            audio_parts.append(chunk["data"])
+        elif chunk_type in {"WordBoundary", "SentenceBoundary"}:
+            try:
+                start_sec = ticks_to_seconds(int(chunk.get("offset", 0)))
+                duration_sec = ticks_to_seconds(int(chunk.get("duration", 0)))
+                text_part = (chunk.get("text") or "").strip()
+                if text_part:
+                    words.append({
+                        "type": chunk_type,
+                        "text": text_part,
+                        "start": start_sec,
+                        "end": start_sec + max(0.01, duration_sec),
+                    })
+            except Exception:
+                continue
+
+    return b"".join(audio_parts), words
 
 
 def gtts_to_bytes(text: str, lang: str = "vi") -> bytes:
-    """
-    Synchronous gTTS -> bytes (run in executor).
-    Retries transient network/socket failures.
-    """
     last_exc = None
     for attempt in range(3):
         try:
@@ -745,7 +935,6 @@ def gtts_to_bytes(text: str, lang: str = "vi") -> bytes:
             last_exc = exc
             error_type = type(exc).__name__
             print(f"[WARN] gTTS attempt {attempt + 1} failed with {error_type}: {exc}")
-
             if attempt < 2:
                 if any(x in error_type.lower() for x in ("socket", "connection", "timeout")):
                     delay = 3 * (attempt + 1)
@@ -772,18 +961,24 @@ async def generate_chunks(
 
     async with _generation_locks[cache_id]:
         audio_path = get_audio_path(cache_id)
+        cues_all: List[dict] = []
+        global_audio_sec = 0.0
+        cue_index = 0
 
-        if is_cache_valid(cache_id):
+        require_subtitles = engine == "edge"
+        if is_cache_valid(cache_id, require_subtitles=require_subtitles):
             generation_status[cache_id] = {
                 "status": "completed",
                 "progress": 1,
                 "total": 1,
+                "subtitle_supported": engine == "edge",
+                "subtitle_ready": engine == "edge",
             }
             return
 
-        # Use pre-computed chunks if provided to avoid duplicate CPU work
         if chunks is None:
             chunks = split_text_into_chunks(text, language=language)
+
         if not chunks:
             err = "Text must not be empty"
             save_cache_meta(
@@ -795,17 +990,22 @@ async def generate_chunks(
                     "voice": voice,
                     "engine": engine,
                     "language": language,
+                    "subtitle_supported": engine == "edge",
+                    "subtitle_ready": False,
                 },
             )
-            # Remove from in-memory so get_effective_status reads persisted terminal state
             generation_status.pop(cache_id, None)
             return
 
         total = len(chunks)
+
         generation_status[cache_id] = {
             "status": "processing",
             "progress": 0,
             "total": total,
+            "subtitle_supported": engine == "edge",
+            "subtitle_ready": False,
+            "subtitle_cues": 0,
         }
         save_cache_meta(
             cache_id,
@@ -817,30 +1017,56 @@ async def generate_chunks(
                 "voice": voice,
                 "engine": engine,
                 "language": language,
+                "subtitle_supported": engine == "edge",
+                "subtitle_ready": False,
+                "subtitle_cues": 0,
             },
         )
 
-        remove_audio_file(cache_id)
+        # Xóa file runtime cũ nhưng giữ meta vừa save
+        remove_runtime_files_only(cache_id)
+
         loop = asyncio.get_running_loop()
 
         try:
             for i, chunk_text in enumerate(chunks):
                 if engine == "edge":
-                    audio = await edge_tts_to_bytes(chunk_text, voice)
+                    audio, words = await edge_tts_to_audio_and_words(chunk_text, voice)
                 else:
                     gtts_lang = GTTS_LANG_MAP.get(language, "en")
                     audio = await loop.run_in_executor(None, gtts_to_bytes, chunk_text, gtts_lang)
+                    words = []
 
                 if not audio:
                     continue
 
-                # Strip ID3 header from subsequent chunks to reduce concatenation artifacts
+                raw_for_duration = audio
                 if i > 0:
                     audio = strip_id3v2(audio)
+                    raw_for_duration = audio
 
                 with open(audio_path, "ab") as f:
                     f.write(audio)
                     f.flush()
+
+                chunk_duration = mp3_duration_seconds(raw_for_duration)
+                if chunk_duration <= 0:
+                    if words:
+                        chunk_duration = max((w["end"] for w in words), default=0.0)
+                    if chunk_duration <= 0:
+                        chunk_duration = 0.05
+
+                if engine == "edge":
+                    new_cues = group_word_boundaries_to_cues(words, global_audio_sec, language)
+                    for cue in new_cues:
+                        cue_index += 1
+                        cue["index"] = cue_index
+
+                    cues_all.extend(new_cues)
+                    append_cues_jsonl(cache_id, new_cues)
+                    generation_status[cache_id]["subtitle_cues"] = len(cues_all)
+
+                global_audio_sec += chunk_duration
 
                 current_size = os.path.getsize(audio_path)
                 generation_status[cache_id]["progress"] = i + 1
@@ -856,12 +1082,22 @@ async def generate_chunks(
                         "voice": voice,
                         "engine": engine,
                         "language": language,
+                        "subtitle_supported": engine == "edge",
+                        "subtitle_ready": False,
+                        "subtitle_cues": len(cues_all),
                     },
                 )
 
             final_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
             if final_size <= 0:
                 raise RuntimeError("Generated audio file is empty")
+
+            subtitle_ready = False
+            if engine == "edge":
+                write_json_atomic(get_cues_json_path(cache_id), cues_all)
+                write_text_atomic(get_srt_path(cache_id), cues_to_srt(cues_all))
+                write_text_atomic(get_vtt_path(cache_id), cues_to_vtt(cues_all))
+                subtitle_ready = True
 
             save_cache_meta(
                 cache_id,
@@ -874,16 +1110,19 @@ async def generate_chunks(
                     "voice": voice,
                     "engine": engine,
                     "language": language,
+                    "subtitle_supported": engine == "edge",
+                    "subtitle_ready": subtitle_ready,
+                    "subtitle_cues": len(cues_all),
+                    "duration_seconds": round(global_audio_sec, 3),
                 },
             )
-            # Remove from in-memory so get_effective_status reads persisted terminal state
             generation_status.pop(cache_id, None)
 
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             print(f"[ERROR] generate_chunks engine={engine}: {err}")
 
-            remove_audio_file(cache_id)
+            remove_runtime_files_only(cache_id)
             save_cache_meta(
                 cache_id,
                 {
@@ -893,9 +1132,11 @@ async def generate_chunks(
                     "voice": voice,
                     "engine": engine,
                     "language": language,
+                    "subtitle_supported": engine == "edge",
+                    "subtitle_ready": False,
+                    "subtitle_cues": len(cues_all),
                 },
             )
-            # Remove from in-memory so get_effective_status reads persisted terminal state
             generation_status.pop(cache_id, None)
         finally:
             _generation_locks.pop(cache_id, None)
@@ -914,22 +1155,7 @@ async def index():
         )
     with open(path, "r", encoding="utf-8") as f:
         html = f.read()
-    # Inject voice registry so the frontend needs no /tts/voices API call on load
-    voices_json = json.dumps(EDGE_VOICES, ensure_ascii=False)
-    html = html.replace(
-        "/* __VOICE_REGISTRY_PLACEHOLDER__ */",
-        f"voiceRegistry = {voices_json};",
-    )
-    # Inject default (vi) locale so the first paint needs no locale fetch
-    vi_locale_path = os.path.join(STATIC_DIR, "locales", "vi.json")
-    if os.path.exists(vi_locale_path):
-        with open(vi_locale_path, "r", encoding="utf-8") as lf:
-            vi_locale_json = json.dumps(json.load(lf), ensure_ascii=False)
-        html = html.replace(
-            "/* __LOCALE_VI_PLACEHOLDER__ */",
-            f"t = {vi_locale_json}; _injectedLang = 'vi';",
-        )
-    html = html.replace("<!-- __VERSION_PLACEHOLDER__ -->", f'<script>window.APP_VERSION = "{VERSION}";</script><span id="versionText" style="font-size: 0.4em; color: #718096; vertical-align: middle; font-weight: normal;"></span>')
+    html = html.replace("__APP_VERSION__", VERSION)
     return HTMLResponse(content=html)
 
 
@@ -960,35 +1186,38 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
     voice = validate_voice(language, request.voice, engine)
 
     cache_id = get_cache_id(text, voice, engine, language)
+    require_subtitles = engine == "edge"
 
-    if is_cache_valid(cache_id):
+    if is_cache_valid(cache_id, require_subtitles=require_subtitles):
         return {
             "cache_id": cache_id,
             "status": "completed",
             "url": f"/tts/file/{cache_id}",
+            "subtitle_supported": engine == "edge",
+            "subtitle_ready": engine == "edge",
         }
 
-    # Use get_effective_status (checks both in-memory and persisted state) to avoid
-    # a race condition where we clean up a cache that is actively being generated.
     current = get_effective_status(cache_id)
     if current and current.get("status") in {"queued", "processing"}:
         return {
             "cache_id": cache_id,
             "status": current.get("status"),
+            "subtitle_supported": engine == "edge",
+            "subtitle_ready": False,
         }
 
-    # If stale or incomplete cache exists -> clean it before re-generating
-    audio_path = get_audio_path(cache_id)
-    meta_path = get_meta_path(cache_id)
-    if os.path.exists(audio_path) or os.path.exists(meta_path):
+    if os.path.exists(get_audio_path(cache_id)) or os.path.exists(get_meta_path(cache_id)):
         cleanup_incomplete_cache(cache_id)
 
-    # Mark queued immediately to avoid race between requests before background task starts
     chunk_preview = split_text_into_chunks(text, language=language)
+
     generation_status[cache_id] = {
         "status": "queued",
         "progress": 0,
         "total": len(chunk_preview),
+        "subtitle_supported": engine == "edge",
+        "subtitle_ready": False,
+        "subtitle_cues": 0,
     }
     save_cache_meta(
         cache_id,
@@ -1000,14 +1229,20 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
             "voice": voice,
             "engine": engine,
             "language": language,
+            "subtitle_supported": engine == "edge",
+            "subtitle_ready": False,
+            "subtitle_cues": 0,
         },
     )
 
     background_tasks.add_task(generate_chunks, text, voice, engine, cache_id, language, chunk_preview)
+
     return {
         "cache_id": cache_id,
         "status": "started",
         "estimated_chunks": len(chunk_preview),
+        "subtitle_supported": engine == "edge",
+        "subtitle_ready": False,
     }
 
 
@@ -1021,10 +1256,6 @@ async def get_status(cache_id: str):
 
 @app.get("/tts/file/{cache_id}")
 async def get_audio_file(cache_id: str, request: Request):
-    """
-    Serve only completed, verified cache files.
-    Live playback while generating must use /tts/stream/{cache_id}.
-    """
     if not is_cache_valid(cache_id):
         status = get_effective_status(cache_id)
         if status and status.get("status") in {"queued", "processing"}:
@@ -1046,17 +1277,190 @@ async def get_audio_file(cache_id: str, request: Request):
     )
 
 
+@app.get("/tts/subtitle/srt/{cache_id}")
+async def get_srt_file(cache_id: str):
+    meta = load_cache_meta(cache_id)
+    if not meta or meta.get("engine") != "edge":
+        raise HTTPException(status_code=404, detail="Subtitle not found")
+
+    if not is_cache_valid(cache_id, require_subtitles=True):
+        status = get_effective_status(cache_id)
+        if status and status.get("status") in {"queued", "processing"}:
+            raise HTTPException(status_code=409, detail="Subtitle is still being generated")
+        raise HTTPException(status_code=404, detail="Subtitle not ready")
+
+    return FileResponse(
+        get_srt_path(cache_id),
+        media_type="application/x-subrip",
+        filename=f"{cache_id}.srt",
+    )
+
+
+@app.get("/tts/subtitle/vtt/{cache_id}")
+async def get_vtt_file(cache_id: str):
+    meta = load_cache_meta(cache_id)
+    if not meta or meta.get("engine") != "edge":
+        raise HTTPException(status_code=404, detail="Subtitle not found")
+
+    if not is_cache_valid(cache_id, require_subtitles=True):
+        status = get_effective_status(cache_id)
+        if status and status.get("status") in {"queued", "processing"}:
+            raise HTTPException(status_code=409, detail="Subtitle is still being generated")
+        raise HTTPException(status_code=404, detail="Subtitle not ready")
+
+    return FileResponse(
+        get_vtt_path(cache_id),
+        media_type="text/vtt",
+        filename=f"{cache_id}.vtt",
+    )
+
+
+@app.get("/tts/cues/{cache_id}")
+async def get_cues(cache_id: str):
+    meta = load_cache_meta(cache_id)
+    if not meta or meta.get("engine") != "edge":
+        return JSONResponse({"cues": [], "done": True})
+
+    cues = load_cues_json(cache_id)
+    if cues:
+        return {"cues": cues, "done": True}
+
+    jsonl_path = get_cues_jsonl_path(cache_id)
+    partial: List[dict] = []
+
+    if os.path.exists(jsonl_path):
+        try:
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        partial.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            pass
+
+    status = get_effective_status(cache_id)
+    done = bool(status and status.get("status") == "completed")
+    return {"cues": partial, "done": done}
+
+
+@app.get("/tts/cues/stream/{cache_id}")
+async def stream_cues_live(cache_id: str):
+    meta = load_cache_meta(cache_id)
+    if not meta or meta.get("engine") != "edge":
+        async def empty():
+            payload = json.dumps({"done": True}, ensure_ascii=False)
+            yield f"event: complete\ndata: {payload}\n\n"
+
+        return StreamingResponse(
+            empty(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        jsonl_path = get_cues_jsonl_path(cache_id)
+        sent_offset = 0
+        last_heartbeat = time.time()
+        stable_completed_checks = 0
+
+        while True:
+            if os.path.exists(jsonl_path):
+                try:
+                    with open(jsonl_path, "r", encoding="utf-8") as f:
+                        f.seek(sent_offset)
+                        while True:
+                            line = f.readline()
+                            if not line:
+                                break
+                            sent_offset = f.tell()
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                payload = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            yield f"event: cue\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                except OSError:
+                    pass
+
+            st = get_effective_status(cache_id)
+            state = st.get("status") if st else None
+
+            if state == "failed":
+                payload = json.dumps({"error": st.get("error", "generation failed")}, ensure_ascii=False)
+                yield f"event: error\ndata: {payload}\n\n"
+                break
+
+            if state == "completed":
+                # kiểm tra lần nữa xem còn cue cuối nào chưa flush hết không
+                if os.path.exists(jsonl_path):
+                    try:
+                        with open(jsonl_path, "r", encoding="utf-8") as f:
+                            f.seek(sent_offset)
+                            has_more = False
+                            while True:
+                                line = f.readline()
+                                if not line:
+                                    break
+                                has_more = True
+                                sent_offset = f.tell()
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    payload = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                yield f"event: cue\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+                            if not has_more:
+                                stable_completed_checks += 1
+                    except OSError:
+                        stable_completed_checks += 1
+                else:
+                    stable_completed_checks += 1
+
+                if stable_completed_checks >= 2:
+                    payload = json.dumps({"done": True}, ensure_ascii=False)
+                    yield f"event: complete\ndata: {payload}\n\n"
+                    break
+            else:
+                stable_completed_checks = 0
+
+            if time.time() - last_heartbeat >= 10:
+                yield ": keep-alive\n\n"
+                last_heartbeat = time.time()
+
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/tts/stream/{cache_id}")
 async def stream_audio_live(cache_id: str):
-    """
-    True live-streaming endpoint using chunked transfer encoding.
-    Sends bytes as soon as they are appended to disk.
-    Intended for MediaSource API or audio player on frontend.
-    """
     audio_path = get_audio_path(cache_id)
 
-    # Wait for first bytes to appear
-    for _ in range(150):  # up to 15 seconds
+    # Chờ đến khi có byte đầu tiên
+    for _ in range(150):  # ~15 giây
         if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
             break
 
@@ -1128,9 +1532,7 @@ async def stream_audio_live(cache_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Optional debug route: inspect chunking result
-# Enabled only when ENABLE_DEBUG_TTS=true (not for production use)
-# Uses TTSRequest for input; gated to prevent accidental exposure.
+# Optional debug route
 # ---------------------------------------------------------------------------
 @app.post("/tts/debug/chunks")
 async def debug_chunks(request: TTSRequest):
@@ -1170,7 +1572,7 @@ async def debug_chunks(request: TTSRequest):
 # ---------------------------------------------------------------------------
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {"ok": True, "version": VERSION}
 
 
 # ---------------------------------------------------------------------------
